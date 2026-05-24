@@ -1,0 +1,35 @@
+from groq import Groq
+from app.core.config import GROQ_API_KEY
+from fastapi import HTTPException
+from app.core.logger import logger
+import time
+
+client = Groq(api_key=GROQ_API_KEY)
+
+async def generate_response(query: str):
+    try:
+        start_time = time.time()
+
+        chat_completion = await client.chat.completions.create(
+            messages=[{"role": "user", "content": query}],
+             model="llama3-8b-8192",)
+        
+        response = chat_completion.choices[0].message.content  
+        logger.info(f"Generated Response: {response}") 
+
+        latency = time.time() - start_time
+        logger.info(f"Groq API Latency: {latency:.2f} seconds")
+        
+        return {
+            "status": "success",
+            "latency": latency,
+            "model": "llama3-8b-8192",
+            "response": response
+        } 
+             
+    except Exception as e:
+        logger.error(f"Error generating response: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Groq API Error: {str(e)}"
+        )
