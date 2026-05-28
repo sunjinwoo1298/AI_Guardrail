@@ -71,3 +71,43 @@ These can be configured in `.env`:
 ### Why the order matters
 
 Security runs before cache so raw sensitive data never gets stored in Redis or ChromaDB. The cache layer only sees the sanitized prompt.
+
+## Observability Dashboard
+
+The project now exposes Prometheus metrics at `GET /metrics` and ships a Grafana dashboard that tracks:
+
+- request analytics
+- cache hit charts
+- security events
+- latency dashboards
+
+### Metrics exposed
+
+- `ai_proxy_http_requests_total`
+- `ai_proxy_http_request_duration_seconds`
+- `ai_proxy_cache_lookups_total`
+- `ai_proxy_cache_writes_total`
+- `ai_proxy_model_requests_total`
+- `ai_proxy_model_latency_seconds`
+- `ai_proxy_model_tokens_total`
+- `ai_proxy_model_cost_total`
+- `ai_proxy_security_events_total`
+- `ai_proxy_security_blocks_total`
+- `ai_proxy_security_risk_score`
+
+### Run the observability stack
+
+Run the app normally with FastAPI, then start Prometheus and Grafana with:
+
+```bash
+docker compose -f docker-compose.observability.yml up -d
+```
+
+Prometheus scrapes the app from `host.docker.internal:8000/metrics`, which works well on Windows with Docker Desktop.
+
+Grafana is available at `http://localhost:3000` with:
+
+- username: `admin`
+- password: `admin`
+
+The dashboard is provisioned automatically from `observability/grafana/dashboards/ai-guardrail-observability.json`.

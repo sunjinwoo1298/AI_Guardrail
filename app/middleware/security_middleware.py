@@ -6,6 +6,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import ENABLE_PII_MASKING
 from app.core.logger import logger
+from app.observability.metrics import (
+    record_security_block,
+    record_security_event,
+    record_security_risk,
+)
 from app.security.prompt_guard import detect_prompt_injection
 from app.security.risk_engine import calculate_risk_score, should_block_prompt
 from app.security.sanitizer import sanitize_text
@@ -29,6 +34,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             risk_score, pii_detections, injection_detections = calculate_risk_score(prompt)
             sanitized_prompt = sanitize_text(prompt) if ENABLE_PII_MASKING else prompt
             blocked = should_block_prompt(risk_score, injection_detections)
+            record_security_risk(risk_score)
 
             security_context = {
                 "original_prompt": prompt,
@@ -44,12 +50,14 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             request.state.security_context = security_context
 
             if pii_detections:
+                record_security_event("pii", "detected")
                 logger.warning(
                     "PII detected in prompt: %s",
                     ", ".join(sorted({item['type'] for item in pii_detections}))
                 )
 
             if injection_detections:
+                record_security_event("prompt_injection", "detected")
                 logger.warning(
                     "Prompt injection attempt detected: %s",
                     ", ".join(injection_detections)
@@ -63,6 +71,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             )
 
             if blocked:
+                record_security_block("prompt_injection" if injection_detections else "risk_score")
                 logger.warning(
                     "Prompt blocked by security policy: risk_score=%s path=%s",
                     security_context["risk_score"],

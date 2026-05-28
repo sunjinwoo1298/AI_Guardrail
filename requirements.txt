@@ -6,3 +6,4 @@ chromadb
 redis
 sentence-transformers
 pydantic
+prometheus-client

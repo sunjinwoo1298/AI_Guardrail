@@ -1,0 +1,103 @@
+{
+  "uid": "ai-guardrail-observability",
+  "title": "AI Guardrail Observability",
+  "tags": ["ai", "proxy", "observability"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Request Rate",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "sum by (endpoint) (rate(ai_proxy_http_requests_total[5m]))",
+          "legendFormat": "{{endpoint}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP Latency p95",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(ai_proxy_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{endpoint}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache Hit Rate",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(ai_proxy_cache_lookups_total{result=\"hit\"}[5m])) / sum(rate(ai_proxy_cache_lookups_total[5m]))",
+          "legendFormat": "hit rate"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Semantic vs Exact Cache Hits",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "sum by (layer) (rate(ai_proxy_cache_lookups_total{result=\"hit\"}[5m]))",
+          "legendFormat": "{{layer}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Security Events",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "sum by (event, action) (rate(ai_proxy_security_events_total[5m]))",
+          "legendFormat": "{{event}} / {{action}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Blocked Prompts",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(ai_proxy_security_blocks_total[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Model Latency",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint, cache_hit, cache_type) (rate(ai_proxy_model_latency_seconds_bucket[5m])))",
+          "legendFormat": "{{endpoint}} / {{cache_hit}} / {{cache_type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Estimated Cost",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "targets": [
+        {
+          "expr": "sum by (cache_hit, cache_type) (rate(ai_proxy_model_cost_total[5m]))",
+          "legendFormat": "{{cache_hit}} / {{cache_type}}"
+        }
+      ]
+    }
+  ]
+}

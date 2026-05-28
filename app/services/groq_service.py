@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from app.core.logger import logger
 from app.core.cost_calculator import calculate_cost
 from app.core.request_id import generate_request_id
+from app.observability.metrics import record_model_observation, record_stream_duration
 from app.services.cache_service import cache_response, get_exact_cache, search_semantic_cache
 
 client = AsyncGroq(api_key=GROQ_API_KEY)
@@ -72,6 +73,17 @@ async def generate_response(query: str, security_context: dict | None = None):
             total_tokens = int(exact_cache.get("total_tokens", 0) or 0)
             cache_saved_cost = float(exact_cache.get("estimated_cost", 0.0) or 0.0)
 
+            record_model_observation(
+                endpoint="generate",
+                cache_hit=True,
+                cache_type="exact",
+                latency_seconds=latency,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=0.0,
+            )
+
             return _build_response_payload(
                 request_id=request_id,
                 latency=latency,
@@ -98,6 +110,17 @@ async def generate_response(query: str, security_context: dict | None = None):
             completion_tokens = int(cached_entry.get("completion_tokens", 0) or 0)
             total_tokens = int(cached_entry.get("total_tokens", 0) or 0)
             cache_saved_cost = float(cached_entry.get("estimated_cost", 0.0) or 0.0)
+
+            record_model_observation(
+                endpoint="generate",
+                cache_hit=True,
+                cache_type="semantic",
+                latency_seconds=latency,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=0.0,
+            )
 
             cache_response(
                 prompt=query,
@@ -152,6 +175,17 @@ async def generate_response(query: str, security_context: dict | None = None):
         logger.info(f"Estimated Cost for this request: ${estimated_cost:.6f}")
         logger.info(f"Request ID: {request_id}")
 
+        record_model_observation(
+            endpoint="generate",
+            cache_hit=False,
+            cache_type="generated",
+            latency_seconds=latency,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost=estimated_cost,
+        )
+
         cache_response(
             prompt=query,
             response=response,
@@ -205,6 +239,17 @@ async def stream_response(query: str, security_context: dict | None = None):
             total_tokens = int(exact_cache.get("total_tokens", 0) or 0)
             cache_saved_cost = float(exact_cache.get("estimated_cost", 0.0) or 0.0)
 
+            record_model_observation(
+                endpoint="stream",
+                cache_hit=True,
+                cache_type="exact",
+                latency_seconds=latency,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=0.0,
+            )
+
             yield f"data: {cached_response}\n\n"
             yield f"data: {json.dumps({'__meta': _build_response_payload(request_id=request_id, latency=latency, response=cached_response, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=0.0, cache_hit=True, cache_type='exact', cache_saved_cost=cache_saved_cost, security_metadata=security_metadata)})}\n\n"
             return
@@ -221,6 +266,17 @@ async def stream_response(query: str, security_context: dict | None = None):
             completion_tokens = int(cached_entry.get("completion_tokens", 0) or 0)
             total_tokens = int(cached_entry.get("total_tokens", 0) or 0)
             cache_saved_cost = float(cached_entry.get("estimated_cost", 0.0) or 0.0)
+
+            record_model_observation(
+                endpoint="stream",
+                cache_hit=True,
+                cache_type="semantic",
+                latency_seconds=latency,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=0.0,
+            )
 
             cache_response(
                 prompt=query,
@@ -283,6 +339,19 @@ async def stream_response(query: str, security_context: dict | None = None):
             """
         )
 
+        record_model_observation(
+            endpoint="stream",
+            cache_hit=False,
+            cache_type="generated",
+            latency_seconds=latency,
+            prompt_tokens=estimated_prompt_tokens,
+            completion_tokens=estimated_completion_tokens,
+            total_tokens=estimated_total_tokens,
+            estimated_cost=estimated_cost,
+        )
+
+        record_stream_duration(cache_hit=False, cache_type="generated", duration_seconds=latency)
+
         cache_response(
             prompt=query,
             response=full_response,
@@ -317,6 +386,8 @@ async def stream_response(query: str, security_context: dict | None = None):
         logger.error(
             f"Error streaming response: {str(e)}"
         )
+
+        record_stream_duration(cache_hit=False, cache_type="error", duration_seconds=time.time() - start_time)
 
         raise HTTPException(
             status_code=500,

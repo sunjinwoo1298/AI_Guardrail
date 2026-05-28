@@ -16,6 +16,7 @@ from app.core.config import (
     REDIS_URL,
 )
 from app.core.logger import logger
+from app.observability.metrics import record_cache_lookup, record_cache_write
 
 _redis_client = None
 _chroma_client = None
@@ -97,16 +98,21 @@ def generate_embedding(text: str):
 def get_exact_cache(prompt: str):
     redis_client = get_redis_client()
     if redis_client is None:
+        record_cache_lookup("redis", "unavailable")
         return None
 
     cached_value = redis_client.get(build_exact_cache_key(prompt))
     if cached_value is None:
+        record_cache_lookup("redis", "miss")
         return None
+
+    record_cache_lookup("redis", "hit")
 
     try:
         return json.loads(cached_value)
     except json.JSONDecodeError:
         logger.warning("Invalid JSON in Redis exact cache entry")
+        record_cache_lookup("redis", "error")
         return None
 
 
@@ -121,11 +127,15 @@ def search_semantic_cache(prompt: str):
     )
 
     if not results.get("ids") or not results["ids"][0]:
+        record_cache_lookup("semantic", "miss")
         return None
 
     distance = float(results["distances"][0][0])
     if distance > CACHE_SIMILARITY_THRESHOLD:
+        record_cache_lookup("semantic", "miss")
         return None
+
+    record_cache_lookup("semantic", "hit")
 
     metadata = results.get("metadatas", [[{}]])[0][0] or {}
     documents = results.get("documents", [[""]])[0][0]
@@ -177,8 +187,10 @@ def cache_response(
                 CACHE_TTL_SECONDS,
                 json.dumps(payload),
             )
+            record_cache_write("redis", "success")
         except Exception as exc:
             logger.warning(f"Failed to write Redis cache: {exc}")
+            record_cache_write("redis", "failed")
 
     try:
         collection = get_chroma_collection()
@@ -188,5 +200,6 @@ def cache_response(
             metadatas=[payload],
             ids=[str(uuid.uuid4())],
         )
+        record_cache_write("semantic", "success")
     except Exception as exc:
         logger.warning(f"Failed to write semantic cache: {exc}")
