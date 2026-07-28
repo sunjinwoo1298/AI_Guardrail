@@ -1,7 +1,7 @@
 import json
 import time
+from typing import Optional
 
-from groq import AsyncGroq
 from app.core.config import GROQ_API_KEY
 from fastapi import HTTPException
 from app.core.logger import logger
@@ -10,8 +10,20 @@ from app.core.request_id import generate_request_id
 from app.observability.metrics import record_model_observation, record_stream_duration
 from app.services.cache_service import cache_response, get_exact_cache, search_semantic_cache
 
-client = AsyncGroq(api_key=GROQ_API_KEY)
-MODEL_NAME = "llama3-8b-8192"
+client = None
+# MODEL_NAME = "llama3-8b-8192"
+MODEL_NAME = "llama-3.1-8b-instant"
+
+
+def get_groq_client():
+    global client
+    if client is None:
+        if not GROQ_API_KEY:
+            raise ValueError("GROQ_API_KEY is required")
+        from groq import AsyncGroq
+
+        client = AsyncGroq(api_key=GROQ_API_KEY)
+    return client
 
 
 def _build_response_payload(
@@ -24,11 +36,11 @@ def _build_response_payload(
     total_tokens: int,
     estimated_cost: float,
     cache_hit: bool,
-    cache_type: str | None,
+    cache_type: Optional[str],
     cache_saved_cost: float = 0.0,
-    similarity_distance: float | None = None,
-    source_prompt: str | None = None,
-    security_metadata: dict | None = None,
+    similarity_distance: Optional[float] = None,
+    source_prompt: Optional[str] = None,
+    security_metadata: Optional[dict] = None,
 ):
     payload = {
         "status": "success",
@@ -57,7 +69,7 @@ def _build_response_payload(
     return payload
 
 
-async def generate_response(query: str, security_context: dict | None = None):
+async def generate_response(query: str, security_context: Optional[dict] = None):
     try:
         start_time = time.time()
         request_id = generate_request_id()
@@ -153,7 +165,8 @@ async def generate_response(query: str, security_context: dict | None = None):
                 security_metadata=security_metadata,
             )
 
-        chat_completion = await client.chat.completions.create(
+        groq_client = get_groq_client()
+        chat_completion = await groq_client.chat.completions.create(
             messages=[{"role": "user", "content": query}],
             model=MODEL_NAME,
         )
@@ -223,7 +236,7 @@ async def generate_response(query: str, security_context: dict | None = None):
         )
 
 
-async def stream_response(query: str, security_context: dict | None = None):
+async def stream_response(query: str, security_context: Optional[dict] = None):
     try:
         start_time = time.time()
         request_id = generate_request_id()
@@ -297,7 +310,8 @@ async def stream_response(query: str, security_context: dict | None = None):
             yield f"data: {json.dumps({'__meta': _build_response_payload(request_id=request_id, latency=latency, response=cached_response, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=0.0, cache_hit=True, cache_type='semantic', cache_saved_cost=cache_saved_cost, similarity_distance=similarity_distance, source_prompt=source_prompt, security_metadata=security_metadata)})}\n\n"
             return
 
-        stream = await client.chat.completions.create(
+        groq_client = get_groq_client()
+        stream = await groq_client.chat.completions.create(
             messages=[
                 {
                     "role": "user",

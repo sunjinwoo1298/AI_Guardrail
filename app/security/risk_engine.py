@@ -1,3 +1,5 @@
+from typing import List, Tuple
+
 from app.core.config import (
     ALLOW_EMAILS,
     ALLOW_PHONE_NUMBERS,
@@ -9,7 +11,7 @@ from app.security.pii_detector import PII_WEIGHTS, detect_pii
 from app.security.prompt_guard import INJECTION_WEIGHTS, detect_prompt_injection
 
 
-def calculate_risk_score(text: str):
+def calculate_risk_score(text: str) -> Tuple[float, list, list]:
     pii_detections = detect_pii(text)
     injection_detections = detect_prompt_injection(text)
 
@@ -44,7 +46,7 @@ def calculate_risk_score(text: str):
     return min(risk_score, 1.0), pii_detections, injection_detections
 
 
-def should_block_prompt(risk_score: float, injection_detections: list[str]):
+def should_block_prompt(risk_score: float, injection_detections: List[str]):
     if BLOCK_PROMPT_INJECTION and injection_detections:
         return True
 

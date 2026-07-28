@@ -3,10 +3,22 @@ import json
 import threading
 import time
 import uuid
+from typing import Optional
 
-import chromadb
-import redis
-from sentence_transformers import SentenceTransformer
+try:
+    import chromadb
+except ImportError:  # pragma: no cover - optional in test environments
+    chromadb = None
+
+try:
+    import redis
+except ImportError:  # pragma: no cover - optional in test environments
+    redis = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:  # pragma: no cover - optional in test environments
+    SentenceTransformer = None
 
 from app.core.config import (
     CACHE_SIMILARITY_THRESHOLD,
@@ -40,6 +52,10 @@ def get_redis_client():
     if _redis_client is not None:
         return _redis_client
 
+    if redis is None:
+        logger.warning("Redis library is unavailable")
+        return None
+
     with _lock:
         if _redis_client is not None:
             return _redis_client
@@ -60,6 +76,10 @@ def get_chroma_collection():
     if _collection is not None:
         return _collection
 
+    if chromadb is None:
+        logger.warning("ChromaDB library is unavailable")
+        return None
+
     with _lock:
         if _collection is not None:
             return _collection
@@ -79,6 +99,10 @@ def get_embedding_model():
     if _embedding_model is not None:
         return _embedding_model
 
+    if SentenceTransformer is None:
+        logger.warning("SentenceTransformer library is unavailable")
+        return None
+
     with _lock:
         if _embedding_model is not None:
             return _embedding_model
@@ -91,6 +115,8 @@ def get_embedding_model():
 
 def generate_embedding(text: str):
     model = get_embedding_model()
+    if model is None:
+        raise RuntimeError("Embedding model is unavailable")
     embedding = model.encode(text, normalize_embeddings=True)
     return embedding.tolist()
 
@@ -117,35 +143,40 @@ def get_exact_cache(prompt: str):
 
 
 def search_semantic_cache(prompt: str):
-    collection = get_chroma_collection()
-    query_embedding = generate_embedding(prompt)
+    try:
+        collection = get_chroma_collection()
+        query_embedding = generate_embedding(prompt)
 
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=1,
-        include=["documents", "metadatas", "distances"],
-    )
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=1,
+            include=["documents", "metadatas", "distances"],
+        )
 
-    if not results.get("ids") or not results["ids"][0]:
-        record_cache_lookup("semantic", "miss")
+        if not results.get("ids") or not results["ids"][0]:
+            record_cache_lookup("semantic", "miss")
+            return None
+
+        distance = float(results["distances"][0][0])
+        if distance > CACHE_SIMILARITY_THRESHOLD:
+            record_cache_lookup("semantic", "miss")
+            return None
+
+        record_cache_lookup("semantic", "hit")
+
+        metadata = results.get("metadatas", [[{}]])[0][0] or {}
+        documents = results.get("documents", [[""]])[0][0]
+
+        return {
+            "response": documents,
+            "distance": distance,
+            "source_prompt": metadata.get("prompt"),
+            "cached_entry": metadata,
+        }
+    except Exception as exc:
+        logger.warning(f"Semantic cache lookup failed: {exc}")
+        record_cache_lookup("semantic", "error")
         return None
-
-    distance = float(results["distances"][0][0])
-    if distance > CACHE_SIMILARITY_THRESHOLD:
-        record_cache_lookup("semantic", "miss")
-        return None
-
-    record_cache_lookup("semantic", "hit")
-
-    metadata = results.get("metadatas", [[{}]])[0][0] or {}
-    documents = results.get("documents", [[""]])[0][0]
-
-    return {
-        "response": documents,
-        "distance": distance,
-        "source_prompt": metadata.get("prompt"),
-        "cached_entry": metadata,
-    }
 
 
 def cache_response(
@@ -159,9 +190,9 @@ def cache_response(
     total_tokens: int,
     estimated_cost: float,
     cache_type: str,
-    source_prompt: str | None = None,
-    similarity_distance: float | None = None,
-    security_metadata: dict | None = None,
+    source_prompt: Optional[str] = None,
+    similarity_distance: Optional[float] = None,
+    security_metadata: Optional[dict] = None,
 ):
     payload = {
         "prompt": prompt,
@@ -203,3 +234,4 @@ def cache_response(
         record_cache_write("semantic", "success")
     except Exception as exc:
         logger.warning(f"Failed to write semantic cache: {exc}")
+        record_cache_write("semantic", "failed")

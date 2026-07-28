@@ -1,7 +1,9 @@
 from dotenv import load_dotenv
 import os
+
 load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")    
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "semantic_cache")
 CACHE_SIMILARITY_THRESHOLD = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.15"))
@@ -13,3 +15,22 @@ BLOCK_HIGH_RISK_PROMPTS = os.getenv("BLOCK_HIGH_RISK_PROMPTS", "true").lower() =
 MAX_RISK_SCORE = float(os.getenv("MAX_RISK_SCORE", "0.8"))
 ALLOW_EMAILS = os.getenv("ALLOW_EMAILS", "false").lower() == "true"
 ALLOW_PHONE_NUMBERS = os.getenv("ALLOW_PHONE_NUMBERS", "false").lower() == "true"
+
+
+def validate_settings():
+    errors = []
+
+    if not GROQ_API_KEY:
+        errors.append("GROQ_API_KEY is required")
+
+    if not 0.0 <= CACHE_SIMILARITY_THRESHOLD <= 1.0:
+        errors.append("CACHE_SIMILARITY_THRESHOLD must be between 0.0 and 1.0")
+
+    if CACHE_TTL_SECONDS <= 0:
+        errors.append("CACHE_TTL_SECONDS must be a positive integer")
+
+    if not 0.0 <= MAX_RISK_SCORE <= 1.0:
+        errors.append("MAX_RISK_SCORE must be between 0.0 and 1.0")
+
+    if errors:
+        raise ValueError("Invalid configuration: " + "; ".join(errors))

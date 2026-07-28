@@ -1,3 +1,5 @@
+from typing import Optional
+
 from prometheus_client import Counter, Gauge, Histogram
 
 HTTP_REQUESTS_TOTAL = Counter(
@@ -101,7 +103,7 @@ def record_model_observation(
     *,
     endpoint: str,
     cache_hit: bool,
-    cache_type: str | None,
+    cache_type: Optional[str],
     latency_seconds: float,
     prompt_tokens: int,
     completion_tokens: int,
@@ -146,7 +148,7 @@ def record_model_observation(
     ).inc(estimated_cost)
 
 
-def record_stream_duration(cache_hit: bool, cache_type: str | None, duration_seconds: float):
+def record_stream_duration(cache_hit: bool, cache_type: Optional[str], duration_seconds: float):
     STREAM_DURATION_SECONDS.labels(
         cache_hit="true" if cache_hit else "false",
         cache_type=cache_type or "none",

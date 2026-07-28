@@ -7,3 +7,4 @@ redis
 sentence-transformers
 pydantic
 prometheus-client
+pytest
