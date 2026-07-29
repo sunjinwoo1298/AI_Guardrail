@@ -30,6 +30,33 @@ Client
 
 Security and validation happen before cache lookup so raw sensitive input is screened before reuse or storage.
 
+```mermaid
+flowchart LR
+    Client[Client Application]
+    Auth[Auth Middleware<br/>x-api-key validation]
+    Security[Security Middleware<br/>PII + prompt injection + risk scoring]
+    Validation[Request Model Validation<br/>non-empty prompt + max length]
+    Logging[Logging Middleware<br/>latency + request counters]
+    Router[API Routes<br/>/generate and /stream]
+    ExactCache[Redis Exact Cache]
+    SemanticCache[ChromaDB Semantic Cache]
+    Groq[Groq Model API]
+    Redaction[Response Redaction]
+    Metrics[Prometheus Metrics<br/>/metrics]
+    Grafana[Grafana Dashboards]
+
+    Client --> Auth --> Validation --> Security --> Logging --> Router
+    Router --> ExactCache
+    ExactCache -->|miss| SemanticCache
+    SemanticCache -->|miss| Groq
+    Groq --> Redaction --> Router
+    Router --> Metrics
+    Metrics --> Grafana
+    Security --> Metrics
+    ExactCache --> Metrics
+    SemanticCache --> Metrics
+```
+
 ## Request Lifecycle
 
 1. A client calls `POST /generate` or `POST /stream`.
