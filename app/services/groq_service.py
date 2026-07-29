@@ -3,11 +3,13 @@ import time
 from typing import Optional
 
 from app.core.config import GROQ_API_KEY
+from app.core.config import MAX_RESPONSE_CHARS
 from fastapi import HTTPException
 from app.core.logger import logger
 from app.core.cost_calculator import calculate_cost
 from app.core.request_id import generate_request_id
 from app.observability.metrics import record_model_observation, record_stream_duration
+from app.security.sanitizer import sanitize_response
 from app.services.cache_service import cache_response, get_exact_cache, search_semantic_cache
 
 client = None
@@ -69,6 +71,12 @@ def _build_response_payload(
     return payload
 
 
+def _truncate_response(text: str):
+    if len(text) <= MAX_RESPONSE_CHARS:
+        return text
+    return text[:MAX_RESPONSE_CHARS] + "..."
+
+
 async def generate_response(query: str, security_context: Optional[dict] = None):
     try:
         start_time = time.time()
@@ -79,7 +87,7 @@ async def generate_response(query: str, security_context: Optional[dict] = None)
         if exact_cache is not None:
             latency = time.time() - start_time
             logger.info("Redis cache hit")
-            cached_response = exact_cache.get("response", "")
+            cached_response = _truncate_response(sanitize_response(exact_cache.get("response", "")))
             prompt_tokens = int(exact_cache.get("prompt_tokens", 0) or 0)
             completion_tokens = int(exact_cache.get("completion_tokens", 0) or 0)
             total_tokens = int(exact_cache.get("total_tokens", 0) or 0)
@@ -114,7 +122,7 @@ async def generate_response(query: str, security_context: Optional[dict] = None)
         if semantic_cache is not None:
             latency = time.time() - start_time
             logger.info("Semantic cache hit")
-            cached_response = semantic_cache.get("response", "")
+            cached_response = _truncate_response(sanitize_response(semantic_cache.get("response", "")))
             source_prompt = semantic_cache.get("source_prompt")
             similarity_distance = semantic_cache.get("distance")
             cached_entry = semantic_cache.get("cached_entry", {}) or {}
@@ -176,7 +184,7 @@ async def generate_response(query: str, security_context: Optional[dict] = None)
         completion_tokens = usage.completion_tokens
         total_tokens = usage.total_tokens
         estimated_cost = calculate_cost(MODEL_NAME, prompt_tokens, completion_tokens)
-        response = chat_completion.choices[0].message.content
+        response = _truncate_response(sanitize_response(chat_completion.choices[0].message.content))
 
         logger.info(f"Generated Response: {response}")
 
@@ -246,7 +254,7 @@ async def stream_response(query: str, security_context: Optional[dict] = None):
         if exact_cache is not None:
             latency = time.time() - start_time
             logger.info("Redis cache hit for stream")
-            cached_response = exact_cache.get("response", "")
+            cached_response = _truncate_response(sanitize_response(exact_cache.get("response", "")))
             prompt_tokens = int(exact_cache.get("prompt_tokens", 0) or 0)
             completion_tokens = int(exact_cache.get("completion_tokens", 0) or 0)
             total_tokens = int(exact_cache.get("total_tokens", 0) or 0)
@@ -271,7 +279,7 @@ async def stream_response(query: str, security_context: Optional[dict] = None):
         if semantic_cache is not None:
             latency = time.time() - start_time
             logger.info("Semantic cache hit for stream")
-            cached_response = semantic_cache.get("response", "")
+            cached_response = _truncate_response(sanitize_response(semantic_cache.get("response", "")))
             source_prompt = semantic_cache.get("source_prompt")
             similarity_distance = semantic_cache.get("distance")
             cached_entry = semantic_cache.get("cached_entry", {}) or {}
@@ -366,9 +374,11 @@ async def stream_response(query: str, security_context: Optional[dict] = None):
 
         record_stream_duration(cache_hit=False, cache_type="generated", duration_seconds=latency)
 
+        sanitized_full_response = _truncate_response(sanitize_response(full_response))
+
         cache_response(
             prompt=query,
-            response=full_response,
+            response=sanitized_full_response,
             request_id=request_id,
             model_name=MODEL_NAME,
             prompt_tokens=estimated_prompt_tokens,
@@ -393,6 +403,9 @@ async def stream_response(query: str, security_context: Optional[dict] = None):
             "request_id": request_id
             ,**security_metadata
         }
+
+        if sanitized_full_response != full_response:
+            full_response = sanitized_full_response
 
         yield f"data: {json.dumps({'__meta': metadata})}\n\n"
 

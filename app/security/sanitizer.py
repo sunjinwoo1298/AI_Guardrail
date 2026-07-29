@@ -21,3 +21,7 @@ def sanitize_text(text: str):
         sanitized_text = re.sub(pattern, replacement, sanitized_text, flags=re.IGNORECASE)
 
     return sanitized_text
+
+
+def sanitize_response(text: str):
+    return sanitize_text(text)

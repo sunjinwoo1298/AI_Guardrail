@@ -15,6 +15,10 @@ BLOCK_HIGH_RISK_PROMPTS = os.getenv("BLOCK_HIGH_RISK_PROMPTS", "true").lower() =
 MAX_RISK_SCORE = float(os.getenv("MAX_RISK_SCORE", "0.8"))
 ALLOW_EMAILS = os.getenv("ALLOW_EMAILS", "false").lower() == "true"
 ALLOW_PHONE_NUMBERS = os.getenv("ALLOW_PHONE_NUMBERS", "false").lower() == "true"
+API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.strip()]
+REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "true").lower() == "true"
+MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "4000"))
+MAX_RESPONSE_CHARS = int(os.getenv("MAX_RESPONSE_CHARS", "12000"))
 
 
 def validate_settings():
@@ -31,6 +35,15 @@ def validate_settings():
 
     if not 0.0 <= MAX_RISK_SCORE <= 1.0:
         errors.append("MAX_RISK_SCORE must be between 0.0 and 1.0")
+
+    if MAX_PROMPT_CHARS <= 0:
+        errors.append("MAX_PROMPT_CHARS must be a positive integer")
+
+    if MAX_RESPONSE_CHARS <= 0:
+        errors.append("MAX_RESPONSE_CHARS must be a positive integer")
+
+    if REQUIRE_API_KEY and not API_KEYS:
+        errors.append("API_KEYS must contain at least one key when REQUIRE_API_KEY=true")
 
     if errors:
         raise ValueError("Invalid configuration: " + "; ".join(errors))

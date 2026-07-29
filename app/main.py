@@ -6,6 +6,7 @@ from prometheus_client import make_asgi_app
 
 from app.api.routes import router
 from app.core.config import validate_settings
+from app.middleware.auth_middleware import AuthMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.security_middleware import SecurityMiddleware
 
@@ -20,6 +21,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+app.add_middleware(AuthMiddleware)
 app.add_middleware(SecurityMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.include_router(router)
