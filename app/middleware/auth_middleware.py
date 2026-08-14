@@ -4,10 +4,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import API_KEYS, REQUIRE_API_KEY
 from app.core.logger import logger
+from app.core.request_id import generate_request_id
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        request.state.request_id = getattr(request.state, "request_id", None) or request.headers.get("x-request-id") or generate_request_id()
         if request.url.path in {"/health", "/ready", "/metrics", "/"}:
             return await call_next(request)
 

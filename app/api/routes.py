@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from app.models.request_models import PromptRequest
-from app.services.groq_service import generate_response, stream_response
+from app.services.resilient_groq_service import generate_response, stream_response
 
 
 router = APIRouter()

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import threading
@@ -25,7 +26,9 @@ from app.core.config import (
     CACHE_TTL_SECONDS,
     CHROMA_COLLECTION_NAME,
     EMBEDDING_MODEL_NAME,
+    CHROMA_TIMEOUT_SECONDS,
     REDIS_URL,
+    REDIS_TIMEOUT_SECONDS,
 )
 from app.core.logger import logger
 from app.observability.metrics import record_cache_lookup, record_cache_write
@@ -121,65 +124,74 @@ def generate_embedding(text: str):
     return embedding.tolist()
 
 
-def get_exact_cache(prompt: str):
-    redis_client = get_redis_client()
-    if redis_client is None:
-        record_cache_lookup("redis", "unavailable")
-        return None
+async def get_exact_cache(prompt: str):
+    async def _lookup():
+        def _sync_lookup():
+            redis_client = get_redis_client()
+            if redis_client is None:
+                record_cache_lookup("redis", "unavailable")
+                return None
 
-    cached_value = redis_client.get(build_exact_cache_key(prompt))
-    if cached_value is None:
-        record_cache_lookup("redis", "miss")
-        return None
+            cached_value = redis_client.get(build_exact_cache_key(prompt))
+            if cached_value is None:
+                record_cache_lookup("redis", "miss")
+                return None
 
-    record_cache_lookup("redis", "hit")
+            record_cache_lookup("redis", "hit")
+            try:
+                return json.loads(cached_value)
+            except json.JSONDecodeError:
+                logger.warning("Invalid JSON in Redis exact cache entry")
+                record_cache_lookup("redis", "error")
+                return None
 
+        return await asyncio.to_thread(_sync_lookup)
+    return await asyncio.wait_for(_lookup(), timeout=REDIS_TIMEOUT_SECONDS)
+
+
+async def search_semantic_cache(prompt: str):
+    async def _search():
+        def _sync_search():
+            collection = get_chroma_collection()
+            query_embedding = generate_embedding(prompt)
+
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=1,
+                include=["documents", "metadatas", "distances"],
+            )
+
+            if not results.get("ids") or not results["ids"][0]:
+                record_cache_lookup("semantic", "miss")
+                return None
+
+            distance = float(results["distances"][0][0])
+            if distance > CACHE_SIMILARITY_THRESHOLD:
+                record_cache_lookup("semantic", "miss")
+                return None
+
+            record_cache_lookup("semantic", "hit")
+
+            metadata = results.get("metadatas", [[{}]])[0][0] or {}
+            documents = results.get("documents", [[""]])[0][0]
+
+            return {
+                "response": documents,
+                "distance": distance,
+                "source_prompt": metadata.get("prompt"),
+                "cached_entry": metadata,
+            }
+
+        return await asyncio.to_thread(_sync_search)
     try:
-        return json.loads(cached_value)
-    except json.JSONDecodeError:
-        logger.warning("Invalid JSON in Redis exact cache entry")
-        record_cache_lookup("redis", "error")
-        return None
-
-
-def search_semantic_cache(prompt: str):
-    try:
-        collection = get_chroma_collection()
-        query_embedding = generate_embedding(prompt)
-
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=1,
-            include=["documents", "metadatas", "distances"],
-        )
-
-        if not results.get("ids") or not results["ids"][0]:
-            record_cache_lookup("semantic", "miss")
-            return None
-
-        distance = float(results["distances"][0][0])
-        if distance > CACHE_SIMILARITY_THRESHOLD:
-            record_cache_lookup("semantic", "miss")
-            return None
-
-        record_cache_lookup("semantic", "hit")
-
-        metadata = results.get("metadatas", [[{}]])[0][0] or {}
-        documents = results.get("documents", [[""]])[0][0]
-
-        return {
-            "response": documents,
-            "distance": distance,
-            "source_prompt": metadata.get("prompt"),
-            "cached_entry": metadata,
-        }
+        return await asyncio.wait_for(_search(), timeout=CHROMA_TIMEOUT_SECONDS)
     except Exception as exc:
         logger.warning(f"Semantic cache lookup failed: {exc}")
         record_cache_lookup("semantic", "error")
         return None
 
 
-def cache_response(
+async def cache_response(
     *,
     prompt: str,
     response: str,
@@ -213,24 +225,30 @@ def cache_response(
     redis_client = get_redis_client()
     if redis_client is not None:
         try:
-            redis_client.setex(
-                build_exact_cache_key(prompt),
-                CACHE_TTL_SECONDS,
-                json.dumps(payload),
-            )
+            def _redis_write():
+                redis_client.setex(
+                    build_exact_cache_key(prompt),
+                    CACHE_TTL_SECONDS,
+                    json.dumps(payload),
+                )
+
+            await asyncio.wait_for(asyncio.to_thread(_redis_write), timeout=REDIS_TIMEOUT_SECONDS)
             record_cache_write("redis", "success")
         except Exception as exc:
             logger.warning(f"Failed to write Redis cache: {exc}")
             record_cache_write("redis", "failed")
 
     try:
-        collection = get_chroma_collection()
-        collection.add(
-            documents=[response],
-            embeddings=[generate_embedding(prompt)],
-            metadatas=[payload],
-            ids=[str(uuid.uuid4())],
-        )
+        def _semantic_write():
+            collection = get_chroma_collection()
+            collection.add(
+                documents=[response],
+                embeddings=[generate_embedding(prompt)],
+                metadatas=[payload],
+                ids=[str(uuid.uuid4())],
+            )
+
+        await asyncio.wait_for(asyncio.to_thread(_semantic_write), timeout=CHROMA_TIMEOUT_SECONDS)
         record_cache_write("semantic", "success")
     except Exception as exc:
         logger.warning(f"Failed to write semantic cache: {exc}")

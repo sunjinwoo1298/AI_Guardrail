@@ -6,6 +6,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import ENABLE_PII_MASKING
 from app.core.logger import logger
+from app.core.request_id import generate_request_id
 from app.observability.metrics import (
     record_security_block,
     record_security_event,
@@ -18,6 +19,7 @@ from app.security.sanitizer import sanitize_text
 
 class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        request.state.request_id = getattr(request.state, "request_id", None) or request.headers.get("x-request-id") or generate_request_id()
         if request.method not in {"POST", "PUT", "PATCH"}:
             return await call_next(request)
 

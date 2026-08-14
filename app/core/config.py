@@ -19,6 +19,15 @@ API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.s
 REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "true").lower() == "true"
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "4000"))
 MAX_RESPONSE_CHARS = int(os.getenv("MAX_RESPONSE_CHARS", "12000"))
+REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
+REDIS_TIMEOUT_SECONDS = float(os.getenv("REDIS_TIMEOUT_SECONDS", "0.5"))
+CHROMA_TIMEOUT_SECONDS = float(os.getenv("CHROMA_TIMEOUT_SECONDS", "1.5"))
+GROQ_TIMEOUT_SECONDS = float(os.getenv("GROQ_TIMEOUT_SECONDS", "15"))
+GROQ_RETRY_ATTEMPTS = int(os.getenv("GROQ_RETRY_ATTEMPTS", "2"))
+GROQ_RETRY_BASE_DELAY_SECONDS = float(os.getenv("GROQ_RETRY_BASE_DELAY_SECONDS", "0.25"))
+GROQ_CIRCUIT_BREAKER_FAILURE_THRESHOLD = int(os.getenv("GROQ_CIRCUIT_BREAKER_FAILURE_THRESHOLD", "3"))
+GROQ_CIRCUIT_BREAKER_RESET_SECONDS = float(os.getenv("GROQ_CIRCUIT_BREAKER_RESET_SECONDS", "30"))
+SECONDARY_MODEL_NAME = os.getenv("SECONDARY_MODEL_NAME", "llama-3.1-8b-instant")
 
 
 def validate_settings():
@@ -41,6 +50,23 @@ def validate_settings():
 
     if MAX_RESPONSE_CHARS <= 0:
         errors.append("MAX_RESPONSE_CHARS must be a positive integer")
+
+    if REQUEST_TIMEOUT_SECONDS <= 0:
+        errors.append("REQUEST_TIMEOUT_SECONDS must be positive")
+    if REDIS_TIMEOUT_SECONDS <= 0:
+        errors.append("REDIS_TIMEOUT_SECONDS must be positive")
+    if CHROMA_TIMEOUT_SECONDS <= 0:
+        errors.append("CHROMA_TIMEOUT_SECONDS must be positive")
+    if GROQ_TIMEOUT_SECONDS <= 0:
+        errors.append("GROQ_TIMEOUT_SECONDS must be positive")
+    if GROQ_RETRY_ATTEMPTS < 0:
+        errors.append("GROQ_RETRY_ATTEMPTS must be zero or positive")
+    if GROQ_RETRY_BASE_DELAY_SECONDS <= 0:
+        errors.append("GROQ_RETRY_BASE_DELAY_SECONDS must be positive")
+    if GROQ_CIRCUIT_BREAKER_FAILURE_THRESHOLD <= 0:
+        errors.append("GROQ_CIRCUIT_BREAKER_FAILURE_THRESHOLD must be positive")
+    if GROQ_CIRCUIT_BREAKER_RESET_SECONDS <= 0:
+        errors.append("GROQ_CIRCUIT_BREAKER_RESET_SECONDS must be positive")
 
     if REQUIRE_API_KEY and not API_KEYS:
         errors.append("API_KEYS must contain at least one key when REQUIRE_API_KEY=true")

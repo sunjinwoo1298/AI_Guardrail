@@ -1,5 +1,6 @@
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.logger import logger
+from app.core.request_id import generate_request_id
 from app.observability.metrics import record_http_request, set_active_request_count
 import time
 
@@ -16,6 +17,8 @@ def normalize_endpoint(path: str) -> str:
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         start_time = time.perf_counter()
+        request_id = request.headers.get("x-request-id") or generate_request_id()
+        request.state.request_id = request_id
         endpoint = normalize_endpoint(request.url.path)
         set_active_request_count(1)
         response = None
@@ -23,6 +26,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             status_code = getattr(response, "status_code", 200)
+            response.headers["x-request-id"] = request_id
             return response
         except Exception as e:
             logger.error(f"Error occurred while processing request: {str(e)}")

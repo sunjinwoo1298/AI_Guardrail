@@ -11,10 +11,13 @@ def test_generate_requires_api_key():
 
 
 def test_generate_accepts_valid_api_key(monkeypatch):
-    import app.services.groq_service as groq_service
+    import app.services.resilient_groq_service as groq_service
 
-    monkeypatch.setattr(groq_service, "get_exact_cache", lambda query: None)
-    monkeypatch.setattr(groq_service, "search_semantic_cache", lambda query: None)
+    async def fake_none(query):
+        return None
+
+    monkeypatch.setattr(groq_service, "get_exact_cache", fake_none)
+    monkeypatch.setattr(groq_service, "search_semantic_cache", fake_none)
 
     class FakeUsage:
         prompt_tokens = 1
@@ -40,7 +43,10 @@ def test_generate_accepts_valid_api_key(monkeypatch):
 
     monkeypatch.setattr(groq_service, "get_groq_client", lambda: FakeClient())
     monkeypatch.setattr(groq_service, "record_model_observation", lambda **kwargs: None)
-    monkeypatch.setattr(groq_service, "cache_response", lambda **kwargs: None)
+    async def fake_cache_response(**kwargs):
+        return None
+
+    monkeypatch.setattr(groq_service, "cache_response", fake_cache_response)
 
     client = TestClient(app)
     response = client.post(
