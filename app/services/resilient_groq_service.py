@@ -22,6 +22,7 @@ from app.core.resilience import CircuitBreaker, CircuitOpenError, retry_async
 from app.observability.metrics import record_model_observation, record_stream_duration
 from app.observability.tracing import trace
 from app.security.sanitizer import sanitize_response
+from app.security.rate_limiter import refund_tokens, settle_tokens
 from app.services.cache_service import cache_response, get_exact_cache, search_semantic_cache
 
 client = None
@@ -138,6 +139,21 @@ def _degraded_payload(*, request_id: str, latency: float, security_metadata: Opt
     )
 
 
+def _api_key_from_context(security_context: Optional[dict]) -> Optional[str]:
+    if not security_context:
+        return None
+    return security_context.get("api_key")
+
+
+def _reserved_tokens_from_context(security_context: Optional[dict]) -> int:
+    if not security_context:
+        return 0
+    try:
+        return int(security_context.get("reserved_tokens", 0) or 0)
+    except Exception:
+        return 0
+
+
 async def generate_response(query: str, security_context: Optional[dict] = None):
     start_time = time.time()
     request_id = generate_request_id()
@@ -166,6 +182,9 @@ async def generate_response(query: str, security_context: Optional[dict] = None)
                 total_tokens = int(cached.get("total_tokens", 0) or 0)
                 cache_saved_cost = float(cached.get("estimated_cost", 0.0) or 0.0)
                 record_model_observation(endpoint="generate", cache_hit=True, cache_type="exact", latency_seconds=latency, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=0.0)
+                api_key = _api_key_from_context(security_metadata)
+                if api_key:
+                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), total_tokens)
                 return _build_response_payload(request_id=request_id, latency=latency, model=MODEL_NAME, response=response, cache_hit=True, cache_type="exact", prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=0.0, cache_saved_cost=cache_saved_cost, security_metadata=security_metadata)
             finally:
                 if span:
@@ -187,6 +206,9 @@ async def generate_response(query: str, security_context: Optional[dict] = None)
                 cache_saved_cost = float(cached_entry.get("estimated_cost", 0.0) or 0.0)
                 record_model_observation(endpoint="generate", cache_hit=True, cache_type="semantic", latency_seconds=latency, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=0.0)
                 await cache_response(prompt=query, response=response, request_id=request_id, model_name=MODEL_NAME, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=cache_saved_cost, cache_type="semantic", source_prompt=source_prompt, similarity_distance=similarity_distance, security_metadata=security_metadata)
+                api_key = _api_key_from_context(security_metadata)
+                if api_key:
+                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), total_tokens)
                 return _build_response_payload(request_id=request_id, latency=latency, model=MODEL_NAME, response=response, cache_hit=True, cache_type="semantic", prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=0.0, cache_saved_cost=cache_saved_cost, similarity_distance=similarity_distance, source_prompt=source_prompt, security_metadata=security_metadata)
             finally:
                 if span:
@@ -207,6 +229,9 @@ async def generate_response(query: str, security_context: Optional[dict] = None)
                 except Exception as secondary_exc:
                     logger.error(f"Both model attempts failed: primary={primary_exc} secondary={secondary_exc}")
                     latency = time.time() - start_time
+                    api_key = _api_key_from_context(security_metadata)
+                    if api_key:
+                        refund_tokens(api_key, _reserved_tokens_from_context(security_metadata))
                     record_model_observation(endpoint="generate", cache_hit=False, cache_type="degraded", latency_seconds=latency, prompt_tokens=0, completion_tokens=0, total_tokens=0, estimated_cost=0.0)
                     return _degraded_payload(request_id=request_id, latency=latency, security_metadata=security_metadata, reason="model_unavailable")
         finally:
@@ -229,6 +254,9 @@ async def generate_response(query: str, security_context: Optional[dict] = None)
         latency = time.time() - start_time
         record_model_observation(endpoint="generate", cache_hit=False, cache_type="generated", latency_seconds=latency, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=estimated_cost)
         await cache_response(prompt=query, response=response, request_id=request_id, model_name=active_model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=estimated_cost, cache_type="generated", security_metadata=security_metadata)
+        api_key = _api_key_from_context(security_metadata)
+        if api_key:
+            settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), total_tokens)
         return _build_response_payload(request_id=request_id, latency=latency, model=active_model, response=response, cache_hit=False, cache_type=None, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=estimated_cost, cache_saved_cost=0.0, security_metadata=security_metadata)
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
@@ -263,6 +291,9 @@ async def stream_response(query: str, security_context: Optional[dict] = None):
                 total_tokens = int(cached.get("total_tokens", 0) or 0)
                 cache_saved_cost = float(cached.get("estimated_cost", 0.0) or 0.0)
                 record_model_observation(endpoint="stream", cache_hit=True, cache_type="exact", latency_seconds=latency, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=0.0)
+                api_key = _api_key_from_context(security_metadata)
+                if api_key:
+                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), total_tokens)
                 yield f"data: {response}\n\n"
                 yield f"data: {json.dumps({'__meta': _build_response_payload(request_id=request_id, latency=latency, model=MODEL_NAME, response=response, cache_hit=True, cache_type='exact', prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=0.0, cache_saved_cost=cache_saved_cost, security_metadata=security_metadata)})}\n\n"
             finally:
@@ -286,6 +317,9 @@ async def stream_response(query: str, security_context: Optional[dict] = None):
                 cache_saved_cost = float(cached_entry.get("estimated_cost", 0.0) or 0.0)
                 record_model_observation(endpoint="stream", cache_hit=True, cache_type="semantic", latency_seconds=latency, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=0.0)
                 await cache_response(prompt=query, response=response, request_id=request_id, model_name=MODEL_NAME, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=cache_saved_cost, cache_type="semantic", source_prompt=source_prompt, similarity_distance=similarity_distance, security_metadata=security_metadata)
+                api_key = _api_key_from_context(security_metadata)
+                if api_key:
+                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), total_tokens)
                 yield f"data: {response}\n\n"
                 yield f"data: {json.dumps({'__meta': _build_response_payload(request_id=request_id, latency=latency, model=MODEL_NAME, response=response, cache_hit=True, cache_type='semantic', prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=0.0, cache_saved_cost=cache_saved_cost, similarity_distance=similarity_distance, source_prompt=source_prompt, security_metadata=security_metadata)})}\n\n"
             finally:
@@ -308,6 +342,9 @@ async def stream_response(query: str, security_context: Optional[dict] = None):
                 except Exception as secondary_exc:
                     logger.error(f"Stream degraded: primary={primary_exc} secondary={secondary_exc}")
                     latency = time.time() - start_time
+                    api_key = _api_key_from_context(security_metadata)
+                    if api_key:
+                        refund_tokens(api_key, _reserved_tokens_from_context(security_metadata))
                     yield f"data: {json.dumps({'__meta': _degraded_payload(request_id=request_id, latency=latency, security_metadata=security_metadata, reason='model_unavailable')})}\n\n"
                     return
         finally:
@@ -337,8 +374,14 @@ async def stream_response(query: str, security_context: Optional[dict] = None):
             if redaction_span:
                 redaction_span.__exit__(None, None, None)
         await cache_response(prompt=query, response=sanitized_full_response, request_id=request_id, model_name=active_model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=estimated_cost, cache_type="generated", security_metadata=security_metadata)
+        api_key = _api_key_from_context(security_metadata)
+        if api_key:
+            settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), total_tokens)
         yield f"data: {json.dumps({'__meta': _build_response_payload(request_id=request_id, latency=latency, model=active_model, response=sanitized_full_response, cache_hit=False, cache_type=None, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, estimated_cost=estimated_cost, cache_saved_cost=0.0, security_metadata=security_metadata)})}\n\n"
     except Exception as e:
         logger.error(f"Error streaming response: {str(e)}")
+        api_key = _api_key_from_context(security_metadata)
+        if api_key:
+            refund_tokens(api_key, _reserved_tokens_from_context(security_metadata))
         record_stream_duration(cache_hit=False, cache_type="error", duration_seconds=time.time() - start_time)
         raise HTTPException(status_code=500, detail=f"Groq API Stream Error: {str(e)}")

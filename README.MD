@@ -86,6 +86,9 @@ flowchart LR
 - Behavior-aware probabilistic risk scoring using Redis-backed probing signals
 - Sanitization of sensitive input before model calls
 - Response-side redaction, HTML escaping, and system-prompt canary leak protection
+- Dual Redis-backed rate limiting for Requests Per Minute and Tokens Per Minute
+- Atomic rate-limit enforcement with Redis Lua scripting
+- Token refund on upstream model failures so provider outages do not unfairly consume token budget
 
 ### Resilience
 
@@ -285,6 +288,8 @@ The test suite covers:
 - security classifier fallback behavior
 - Presidio fallback behavior
 - output hardening behavior
+- rate-limit rejection behavior
+- atomic limiter and refund behavior
 
 ## Load Test Results
 
@@ -334,7 +339,8 @@ If you need a concise way to describe the project in an interview:
 
 - Built a production-oriented AI guardrail proxy with authentication, risk scoring, prompt injection defense, PII redaction, cache layers, and model fallback.
 - Upgraded the security pipeline from hard-coded rules to a layered system with classifier-backed injection detection, Presidio-backed PII detection, behavior-aware risk scoring, and output hardening.
-- Added failure safety with timeouts, retries, circuit breakers, secondary model fallback, and degraded responses instead of raw 500s.
+- Added failure safety with timeouts, retries, circuit breakers, secondary model fallback, degraded responses instead of raw 500s, and token refunds when upstream providers fail.
+- Added atomic dual rate limiting using Redis Lua scripting to enforce both Requests Per Minute and Tokens Per Minute per API key.
 - Added structured JSON logging, OpenTelemetry tracing, Prometheus metrics, Grafana dashboards, and alerting rules for operational visibility.
 - Verified the system with regression tests, red-team prompt tests, failure-mode tests, and Locust load testing.
 - Recorded a load test of 2,899 requests with 0 failures and low median latency on the synchronous path.

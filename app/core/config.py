@@ -36,6 +36,8 @@ SYSTEM_PROMPT_CANARY = os.getenv("SYSTEM_PROMPT_CANARY", "AI_GUARDRAIL_SYSTEM_CA
 MAX_BEHAVIOR_RISK_SCORE = float(os.getenv("MAX_BEHAVIOR_RISK_SCORE", "0.35"))
 BEHAVIOR_RISK_WINDOW_SECONDS = int(os.getenv("BEHAVIOR_RISK_WINDOW_SECONDS", "300"))
 BEHAVIOR_RISK_RATE_THRESHOLD = int(os.getenv("BEHAVIOR_RISK_RATE_THRESHOLD", "4"))
+RPM_LIMIT_PER_MINUTE = int(os.getenv("RPM_LIMIT_PER_MINUTE", "120"))
+TPM_LIMIT_PER_MINUTE = int(os.getenv("TPM_LIMIT_PER_MINUTE", "12000"))
 
 
 def validate_settings():
@@ -81,6 +83,10 @@ def validate_settings():
         errors.append("BEHAVIOR_RISK_WINDOW_SECONDS must be positive")
     if BEHAVIOR_RISK_RATE_THRESHOLD <= 0:
         errors.append("BEHAVIOR_RISK_RATE_THRESHOLD must be positive")
+    if RPM_LIMIT_PER_MINUTE <= 0:
+        errors.append("RPM_LIMIT_PER_MINUTE must be positive")
+    if TPM_LIMIT_PER_MINUTE <= 0:
+        errors.append("TPM_LIMIT_PER_MINUTE must be positive")
 
     if REQUIRE_API_KEY and not API_KEYS:
         errors.append("API_KEYS must contain at least one key when REQUIRE_API_KEY=true")

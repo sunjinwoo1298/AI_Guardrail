@@ -57,3 +57,39 @@ def test_generate_accepts_valid_api_key(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["response"] == "ok"
+
+
+def test_generate_rate_limit_rejects_abusive_key(monkeypatch):
+    import app.middleware.auth_middleware as auth_middleware
+
+    async def fake_check_and_consume(*args, **kwargs):
+        class Result:
+            allowed = False
+            reason = "rpm_exceeded"
+            rpm_used = 121
+            rpm_limit = 120
+            tpm_used = 1000
+            tpm_limit = 12000
+
+        return Result()
+
+    monkeypatch.setattr(auth_middleware, "check_and_consume", lambda *args, **kwargs: type("Result", (), {
+        "allowed": False,
+        "reason": "rpm_exceeded",
+        "rpm_used": 121,
+        "rpm_limit": 120,
+        "tpm_used": 1000,
+        "tpm_limit": 12000,
+    })())
+
+    client = TestClient(app)
+    response = client.post(
+        "/generate",
+        headers={"x-api-key": "test-api-key"},
+        json={"prompt": "hello"},
+    )
+
+    assert response.status_code == 429
+    body = response.json()
+    assert body["error"] == "Rate limit exceeded"
+    assert body["reason"] == "rpm_exceeded"
