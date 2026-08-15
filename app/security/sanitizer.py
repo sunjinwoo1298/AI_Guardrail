@@ -1,6 +1,9 @@
+import html
 import re
 
+from app.core.config import SYSTEM_PROMPT_CANARY
 from app.security.pii_detector import PII_PATTERNS
+from app.security.prompt_guard import get_system_prompt_canary
 
 SANITIZATION_LABELS = {
     "EMAIL": "[EMAIL]",
@@ -20,8 +23,13 @@ def sanitize_text(text: str):
         replacement = SANITIZATION_LABELS[pii_type]
         sanitized_text = re.sub(pattern, replacement, sanitized_text, flags=re.IGNORECASE)
 
+    sanitized_text = html.escape(sanitized_text, quote=False)
     return sanitized_text
 
 
 def sanitize_response(text: str):
-    return sanitize_text(text)
+    sanitized_text = sanitize_text(text)
+    canary = get_system_prompt_canary() or SYSTEM_PROMPT_CANARY
+    if canary and canary in sanitized_text:
+        sanitized_text = sanitized_text.replace(canary, "[REDACTED_SYSTEM_PROMPT]")
+    return sanitized_text

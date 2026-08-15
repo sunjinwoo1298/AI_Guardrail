@@ -28,6 +28,14 @@ GROQ_RETRY_BASE_DELAY_SECONDS = float(os.getenv("GROQ_RETRY_BASE_DELAY_SECONDS",
 GROQ_CIRCUIT_BREAKER_FAILURE_THRESHOLD = int(os.getenv("GROQ_CIRCUIT_BREAKER_FAILURE_THRESHOLD", "3"))
 GROQ_CIRCUIT_BREAKER_RESET_SECONDS = float(os.getenv("GROQ_CIRCUIT_BREAKER_RESET_SECONDS", "30"))
 SECONDARY_MODEL_NAME = os.getenv("SECONDARY_MODEL_NAME", "llama-3.1-8b-instant")
+PROMPT_INJECTION_MODEL_NAME = os.getenv(
+    "PROMPT_INJECTION_MODEL_NAME",
+    "protectai/deberta-v3-base-prompt-injection-v2",
+)
+SYSTEM_PROMPT_CANARY = os.getenv("SYSTEM_PROMPT_CANARY", "AI_GUARDRAIL_SYSTEM_CANARY_7f3b9a")
+MAX_BEHAVIOR_RISK_SCORE = float(os.getenv("MAX_BEHAVIOR_RISK_SCORE", "0.35"))
+BEHAVIOR_RISK_WINDOW_SECONDS = int(os.getenv("BEHAVIOR_RISK_WINDOW_SECONDS", "300"))
+BEHAVIOR_RISK_RATE_THRESHOLD = int(os.getenv("BEHAVIOR_RISK_RATE_THRESHOLD", "4"))
 
 
 def validate_settings():
@@ -67,6 +75,12 @@ def validate_settings():
         errors.append("GROQ_CIRCUIT_BREAKER_FAILURE_THRESHOLD must be positive")
     if GROQ_CIRCUIT_BREAKER_RESET_SECONDS <= 0:
         errors.append("GROQ_CIRCUIT_BREAKER_RESET_SECONDS must be positive")
+    if MAX_BEHAVIOR_RISK_SCORE < 0.0 or MAX_BEHAVIOR_RISK_SCORE > 1.0:
+        errors.append("MAX_BEHAVIOR_RISK_SCORE must be between 0.0 and 1.0")
+    if BEHAVIOR_RISK_WINDOW_SECONDS <= 0:
+        errors.append("BEHAVIOR_RISK_WINDOW_SECONDS must be positive")
+    if BEHAVIOR_RISK_RATE_THRESHOLD <= 0:
+        errors.append("BEHAVIOR_RISK_RATE_THRESHOLD must be positive")
 
     if REQUIRE_API_KEY and not API_KEYS:
         errors.append("API_KEYS must contain at least one key when REQUIRE_API_KEY=true")

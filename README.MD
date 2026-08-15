@@ -7,9 +7,9 @@ AI Guardrail Proxy is a production-oriented LLM gateway built with FastAPI. It s
 This project is designed to show how a real AI proxy can protect upstream models and production users at the same time. It helps with:
 
 - API authentication for model traffic
-- Prompt injection detection and blocking
-- PII detection and prompt sanitization
-- Response redaction before return and cache write
+- Prompt injection detection and blocking using a classifier-first guardrail with structural tripwires
+- PII detection and prompt sanitization using Presidio-backed detection with safe fallback
+- Response redaction and output hardening before return and cache write
 - Exact-match Redis caching
 - Semantic ChromaDB caching
 - Retry, timeout, circuit-breaker, and fallback behavior
@@ -81,11 +81,11 @@ flowchart LR
 ### Security
 
 - API-key authentication for model endpoints
-- Prompt injection detection and blocking
-- Regex-based PII detection
-- Risk scoring with configurable blocking thresholds
+- Classifier-backed prompt injection detection with regex tripwires and structural delimiter checks
+- Presidio-backed PII detection with regex fallback for narrow secret formats
+- Behavior-aware probabilistic risk scoring using Redis-backed probing signals
 - Sanitization of sensitive input before model calls
-- Response-side redaction before return and cache write
+- Response-side redaction, HTML escaping, and system-prompt canary leak protection
 
 ### Resilience
 
@@ -282,6 +282,9 @@ The test suite covers:
 - retry and circuit-breaker behavior
 - degraded fallback behavior
 - adversarial prompt blocking
+- security classifier fallback behavior
+- Presidio fallback behavior
+- output hardening behavior
 
 ## Load Test Results
 
@@ -325,3 +328,13 @@ Latest Locust run:
 - The `/stream` path had higher tail latency, which is expected for long-lived streaming requests.
 - The resilience and caching layers prevented request failures under the measured load.
 
+## Interview Summary
+
+If you need a concise way to describe the project in an interview:
+
+- Built a production-oriented AI guardrail proxy with authentication, risk scoring, prompt injection defense, PII redaction, cache layers, and model fallback.
+- Upgraded the security pipeline from hard-coded rules to a layered system with classifier-backed injection detection, Presidio-backed PII detection, behavior-aware risk scoring, and output hardening.
+- Added failure safety with timeouts, retries, circuit breakers, secondary model fallback, and degraded responses instead of raw 500s.
+- Added structured JSON logging, OpenTelemetry tracing, Prometheus metrics, Grafana dashboards, and alerting rules for operational visibility.
+- Verified the system with regression tests, red-team prompt tests, failure-mode tests, and Locust load testing.
+- Recorded a load test of 2,899 requests with 0 failures and low median latency on the synchronous path.
