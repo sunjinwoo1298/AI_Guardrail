@@ -35,20 +35,18 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             payload = json.loads(body.decode("utf-8"))
             prompt = payload.get("prompt", "")
             tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
-            span_ctx = tracer.start_as_current_span("middleware.security") if tracer else None
-            if span_ctx:
-                span_ctx.__enter__()
-            try:
+            if tracer:
+                with tracer.start_as_current_span("middleware.security") as span:
+                    risk_score, pii_detections, injection_detections = calculate_risk_score(prompt)
+                    sanitized_prompt = sanitize_text(prompt) if ENABLE_PII_MASKING else prompt
+                    blocked = should_block_prompt(risk_score, injection_detections)
+                    span.set_attribute("risk_score", risk_score)
+                    span.set_attribute("pii_detected", bool(pii_detections))
+                    span.set_attribute("prompt_injection_detected", bool(injection_detections))
+            else:
                 risk_score, pii_detections, injection_detections = calculate_risk_score(prompt)
                 sanitized_prompt = sanitize_text(prompt) if ENABLE_PII_MASKING else prompt
                 blocked = should_block_prompt(risk_score, injection_detections)
-                if span_ctx:
-                    span_ctx.set_attribute("risk_score", risk_score)
-                    span_ctx.set_attribute("pii_detected", bool(pii_detections))
-                    span_ctx.set_attribute("prompt_injection_detected", bool(injection_detections))
-            finally:
-                if span_ctx:
-                    span_ctx.__exit__(None, None, None)
             record_security_risk(risk_score)
 
             security_context = {

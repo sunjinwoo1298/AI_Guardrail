@@ -1,4 +1,28 @@
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-guardrail-app
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - otel-collector
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-guardrail-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: ai-guardrail-prometheus
@@ -11,6 +35,8 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
+    depends_on:
+      - app
 
   grafana:
     image: grafana/grafana-oss:11.2.0
@@ -29,6 +55,19 @@ services:
     depends_on:
       - prometheus
 
+  otel-collector:
+    image: otel/opentelemetry-collector:0.157.0
+    container_name: ai-guardrail-otel-collector
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./observability/otel/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    command:
+      - "--config=/etc/otelcol/config.yaml"
+    restart: unless-stopped
+
 volumes:
   prometheus_data:
   grafana_data:
+  redis_data:

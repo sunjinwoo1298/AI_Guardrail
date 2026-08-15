@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run unit and integration tests
+        run: pytest -q
+
+  load-test:
+    runs-on: ubuntu-latest
+    needs: test
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run locust load test
+        env:
+          LOAD_TEST_TARGET: ${{ secrets.LOAD_TEST_TARGET }}
+          LOAD_TEST_API_KEY: ${{ secrets.LOAD_TEST_API_KEY }}
+        run: |
+          if [ -z "$LOAD_TEST_TARGET" ]; then
+            echo "Skipping load test because LOAD_TEST_TARGET is not set."
+            exit 0
+          fi
+          locust -f load_test/locustfile.py --headless -u 20 -r 5 -t 5m --host "$LOAD_TEST_TARGET" --csv load_test/results
+      - name: Upload load test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: load_test/results*

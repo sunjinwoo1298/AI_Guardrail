@@ -13,3 +13,4 @@ opentelemetry-sdk
 opentelemetry-instrumentation-fastapi
 opentelemetry-instrumentation-asgi
 opentelemetry-exporter-otlp
+locust
