@@ -79,8 +79,30 @@
     },
     {
       "type": "timeseries",
+      "title": "HTTP Error Rate",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "targets": [
+        {
+          "expr": "sum(rate(ai_proxy_http_requests_total{status=~\"5..\"}[5m])) / sum(rate(ai_proxy_http_requests_total[5m]))",
+          "legendFormat": "error rate"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache Failure Rate",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "targets": [
+        {
+          "expr": "sum(rate(ai_proxy_cache_writes_total{result=\"failed\"}[5m])) / sum(rate(ai_proxy_cache_writes_total[5m]))",
+          "legendFormat": "cache failure rate"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
       "title": "Model Latency",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le, endpoint, cache_hit, cache_type) (rate(ai_proxy_model_latency_seconds_bucket[5m])))",
@@ -91,7 +113,7 @@
     {
       "type": "timeseries",
       "title": "Estimated Cost",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
       "targets": [
         {
           "expr": "sum by (cache_hit, cache_type) (rate(ai_proxy_model_cost_total[5m]))",

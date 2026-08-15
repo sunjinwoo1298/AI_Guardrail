@@ -1,0 +1,38 @@
+groups:
+  - name: ai-guardrail-proxy-alerts
+    rules:
+      - alert: HighP95Latency
+        expr: histogram_quantile(0.95, sum by (le, endpoint) (rate(ai_proxy_http_request_duration_seconds_bucket[5m]))) > 1.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AI proxy p95 latency is above 1.5s"
+          description: "The 95th percentile latency for {{ $labels.endpoint }} is too high."
+
+      - alert: HighErrorRate
+        expr: sum(rate(ai_proxy_http_requests_total{status=~"5.."}[5m])) / sum(rate(ai_proxy_http_requests_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AI proxy error rate is above 5%"
+          description: "HTTP 5xx responses are elevated."
+
+      - alert: CacheFailureRateHigh
+        expr: sum(rate(ai_proxy_cache_writes_total{result="failed"}[5m])) / sum(rate(ai_proxy_cache_writes_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache write failure rate is elevated"
+          description: "Redis or semantic cache writes are failing frequently."
+
+      - alert: SecurityBlockSpike
+        expr: sum(rate(ai_proxy_security_blocks_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Security block volume spiked"
+          description: "Blocked prompt volume is higher than expected."

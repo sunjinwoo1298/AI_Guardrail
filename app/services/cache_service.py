@@ -32,6 +32,7 @@ from app.core.config import (
 )
 from app.core.logger import logger
 from app.observability.metrics import record_cache_lookup, record_cache_write
+from app.observability.tracing import trace
 
 _redis_client = None
 _chroma_client = None
@@ -127,23 +128,31 @@ def generate_embedding(text: str):
 async def get_exact_cache(prompt: str):
     async def _lookup():
         def _sync_lookup():
-            redis_client = get_redis_client()
-            if redis_client is None:
-                record_cache_lookup("redis", "unavailable")
-                return None
-
-            cached_value = redis_client.get(build_exact_cache_key(prompt))
-            if cached_value is None:
-                record_cache_lookup("redis", "miss")
-                return None
-
-            record_cache_lookup("redis", "hit")
+            tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
+            span_ctx = tracer.start_as_current_span("cache.redis_lookup") if tracer else None
+            if span_ctx:
+                span_ctx.__enter__()
             try:
-                return json.loads(cached_value)
-            except json.JSONDecodeError:
-                logger.warning("Invalid JSON in Redis exact cache entry")
-                record_cache_lookup("redis", "error")
-                return None
+                redis_client = get_redis_client()
+                if redis_client is None:
+                    record_cache_lookup("redis", "unavailable")
+                    return None
+
+                cached_value = redis_client.get(build_exact_cache_key(prompt))
+                if cached_value is None:
+                    record_cache_lookup("redis", "miss")
+                    return None
+
+                record_cache_lookup("redis", "hit")
+                try:
+                    return json.loads(cached_value)
+                except json.JSONDecodeError:
+                    logger.warning("Invalid JSON in Redis exact cache entry")
+                    record_cache_lookup("redis", "error")
+                    return None
+            finally:
+                if span_ctx:
+                    span_ctx.__exit__(None, None, None)
 
         return await asyncio.to_thread(_sync_lookup)
     return await asyncio.wait_for(_lookup(), timeout=REDIS_TIMEOUT_SECONDS)
@@ -152,35 +161,43 @@ async def get_exact_cache(prompt: str):
 async def search_semantic_cache(prompt: str):
     async def _search():
         def _sync_search():
-            collection = get_chroma_collection()
-            query_embedding = generate_embedding(prompt)
+            tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
+            span_ctx = tracer.start_as_current_span("cache.semantic_lookup") if tracer else None
+            if span_ctx:
+                span_ctx.__enter__()
+            try:
+                collection = get_chroma_collection()
+                query_embedding = generate_embedding(prompt)
 
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=1,
-                include=["documents", "metadatas", "distances"],
-            )
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=1,
+                    include=["documents", "metadatas", "distances"],
+                )
 
-            if not results.get("ids") or not results["ids"][0]:
-                record_cache_lookup("semantic", "miss")
-                return None
+                if not results.get("ids") or not results["ids"][0]:
+                    record_cache_lookup("semantic", "miss")
+                    return None
 
-            distance = float(results["distances"][0][0])
-            if distance > CACHE_SIMILARITY_THRESHOLD:
-                record_cache_lookup("semantic", "miss")
-                return None
+                distance = float(results["distances"][0][0])
+                if distance > CACHE_SIMILARITY_THRESHOLD:
+                    record_cache_lookup("semantic", "miss")
+                    return None
 
-            record_cache_lookup("semantic", "hit")
+                record_cache_lookup("semantic", "hit")
 
-            metadata = results.get("metadatas", [[{}]])[0][0] or {}
-            documents = results.get("documents", [[""]])[0][0]
+                metadata = results.get("metadatas", [[{}]])[0][0] or {}
+                documents = results.get("documents", [[""]])[0][0]
 
-            return {
-                "response": documents,
-                "distance": distance,
-                "source_prompt": metadata.get("prompt"),
-                "cached_entry": metadata,
-            }
+                return {
+                    "response": documents,
+                    "distance": distance,
+                    "source_prompt": metadata.get("prompt"),
+                    "cached_entry": metadata,
+                }
+            finally:
+                if span_ctx:
+                    span_ctx.__exit__(None, None, None)
 
         return await asyncio.to_thread(_sync_search)
     try:
@@ -226,11 +243,17 @@ async def cache_response(
     if redis_client is not None:
         try:
             def _redis_write():
+                tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
+                span_ctx = tracer.start_as_current_span("cache.redis_write") if tracer else None
+                if span_ctx:
+                    span_ctx.__enter__()
                 redis_client.setex(
                     build_exact_cache_key(prompt),
                     CACHE_TTL_SECONDS,
                     json.dumps(payload),
                 )
+                if span_ctx:
+                    span_ctx.__exit__(None, None, None)
 
             await asyncio.wait_for(asyncio.to_thread(_redis_write), timeout=REDIS_TIMEOUT_SECONDS)
             record_cache_write("redis", "success")
@@ -240,6 +263,10 @@ async def cache_response(
 
     try:
         def _semantic_write():
+            tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
+            span_ctx = tracer.start_as_current_span("cache.semantic_write") if tracer else None
+            if span_ctx:
+                span_ctx.__enter__()
             collection = get_chroma_collection()
             collection.add(
                 documents=[response],
@@ -247,6 +274,8 @@ async def cache_response(
                 metadatas=[payload],
                 ids=[str(uuid.uuid4())],
             )
+            if span_ctx:
+                span_ctx.__exit__(None, None, None)
 
         await asyncio.wait_for(asyncio.to_thread(_semantic_write), timeout=CHROMA_TIMEOUT_SECONDS)
         record_cache_write("semantic", "success")
