@@ -10,6 +10,8 @@ if str(ROOT) not in sys.path:
 os.environ.setdefault("GROQ_API_KEY", "test-key")
 os.environ.setdefault("API_KEYS", "test-api-key")
 os.environ.setdefault("SECONDARY_MODEL_NAME", "fallback-model")
+# Tests must not call the remote injection verifier; tests that need it monkeypatch it.
+os.environ.setdefault("INJECTION_VERIFIER_ENABLED", "false")
 
 
 @pytest.fixture(autouse=True)

@@ -50,7 +50,7 @@ def test_stream_uses_provider_usage_chunk(monkeypatch):
         yield {"choices": [{"delta": {"content": "Hello"}}]}
         yield {"choices": [], "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}}
 
-    async def fake_create(messages, model, stream=False):
+    async def fake_create(messages, model, stream=False, **_kwargs):
         return fake_stream()
 
     async def no_cache(*args, **kwargs):

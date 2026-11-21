@@ -4,7 +4,15 @@ import threading
 import unicodedata
 from typing import Dict, List, Optional
 
-from app.core.config import PROMPT_INJECTION_MODEL_NAME, SYSTEM_PROMPT_CANARY
+from app.core.config import (
+    GROQ_API_KEY,
+    INJECTION_VERIFIER_ENABLED,
+    INJECTION_VERIFIER_MODEL,
+    INJECTION_VERIFIER_THRESHOLD,
+    INJECTION_VERIFIER_TIMEOUT_SECONDS,
+    PROMPT_INJECTION_MODEL_NAME,
+    SYSTEM_PROMPT_CANARY,
+)
 from app.core.logger import logger
 
 INJECTION_PATTERNS = [
@@ -121,12 +129,26 @@ def score_prompt_injection(text: str, classifier_text: Optional[str] = None) -> 
         if tripwire_matches and not is_injection:
             confidence = min(1.0, confidence + 0.15)
             is_injection = confidence >= 0.5
+        source = "classifier"
+
+        # The local DeBERTa model flags many harmless command-style prompts ("Reply with
+        # exactly ...", "Print this ...") at ~1.0. When it is the ONLY signal (no regex
+        # tripwire), ask a second, purpose-built model before blocking.
+        if is_injection and not tripwire_matches:
+            verifier_score = verify_injection(classifier_input)
+            if verifier_score is not None:
+                source = "classifier+verifier"
+                if verifier_score < INJECTION_VERIFIER_THRESHOLD:
+                    logger.info(
+                        f"Injection verifier overruled classifier: classifier={confidence:.3f} verifier={verifier_score:.4f}"
+                    )
+                    is_injection, confidence = False, verifier_score
         return {
             "is_injection": is_injection,
             "confidence": confidence,
             "signals": tripwire_matches,
             "label": label,
-            "source": "classifier",
+            "source": source,
         }
     except Exception as exc:
         logger.warning(f"Prompt injection classifier failed, using tripwire only: {exc}")
@@ -136,6 +158,32 @@ def score_prompt_injection(text: str, classifier_text: Optional[str] = None) -> 
             "signals": tripwire_matches,
             "source": "tripwire",
         }
+
+
+def verify_injection(text: str) -> Optional[float]:
+    """Second opinion from Llama Prompt Guard 2 (served by Groq): probability that
+    ``text`` is a prompt injection, or None if the verifier is off or unreachable
+    (the caller then keeps the local classifier's verdict, i.e. fails closed).
+
+    Measured on this project's cases: harmless prompts the local model flagged scored
+    < 0.005; direct, role-play and tool-result injections scored > 0.99.
+    """
+    if not INJECTION_VERIFIER_ENABLED or not GROQ_API_KEY:
+        return None
+    try:
+        import httpx
+
+        response = httpx.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={"model": INJECTION_VERIFIER_MODEL, "messages": [{"role": "user", "content": text}]},
+            timeout=INJECTION_VERIFIER_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return float(response.json()["choices"][0]["message"]["content"].strip())
+    except Exception as exc:
+        logger.warning(f"Injection verifier unavailable, keeping classifier verdict: {exc!r}")
+        return None
 
 
 def detect_prompt_injection(text: str):

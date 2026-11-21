@@ -1,7 +1,11 @@
 {
   "uid": "ai-guardrail-observability",
   "title": "AI Guardrail Observability",
-  "tags": ["ai", "proxy", "observability"],
+  "tags": [
+    "ai",
+    "proxy",
+    "observability"
+  ],
   "timezone": "browser",
   "schemaVersion": 38,
   "version": 1,
@@ -14,7 +18,12 @@
     {
       "type": "timeseries",
       "title": "Request Rate",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
       "targets": [
         {
           "expr": "sum by (endpoint) (rate(ai_proxy_http_requests_total[5m]))",
@@ -25,7 +34,12 @@
     {
       "type": "timeseries",
       "title": "HTTP Latency p95",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(ai_proxy_http_request_duration_seconds_bucket[5m])))",
@@ -36,7 +50,12 @@
     {
       "type": "timeseries",
       "title": "Cache Hit Rate",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
       "targets": [
         {
           "expr": "sum(rate(ai_proxy_cache_lookups_total{result=\"hit\"}[5m])) / sum(rate(ai_proxy_cache_lookups_total[5m]))",
@@ -47,7 +66,12 @@
     {
       "type": "timeseries",
       "title": "Semantic vs Exact Cache Hits",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
       "targets": [
         {
           "expr": "sum by (layer) (rate(ai_proxy_cache_lookups_total{result=\"hit\"}[5m]))",
@@ -58,7 +82,12 @@
     {
       "type": "timeseries",
       "title": "Security Events",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
       "targets": [
         {
           "expr": "sum by (event, action) (rate(ai_proxy_security_events_total[5m]))",
@@ -69,7 +98,12 @@
     {
       "type": "timeseries",
       "title": "Blocked Prompts",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
       "targets": [
         {
           "expr": "sum by (reason) (rate(ai_proxy_security_blocks_total[5m]))",
@@ -80,7 +114,12 @@
     {
       "type": "timeseries",
       "title": "HTTP Error Rate",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
       "targets": [
         {
           "expr": "sum(rate(ai_proxy_http_requests_total{status=~\"5..\"}[5m])) / sum(rate(ai_proxy_http_requests_total[5m]))",
@@ -91,7 +130,12 @@
     {
       "type": "timeseries",
       "title": "Cache Failure Rate",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
       "targets": [
         {
           "expr": "sum(rate(ai_proxy_cache_writes_total{result=\"failed\"}[5m])) / sum(rate(ai_proxy_cache_writes_total[5m]))",
@@ -102,7 +146,12 @@
     {
       "type": "timeseries",
       "title": "Model Latency",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le, endpoint, cache_hit, cache_type) (rate(ai_proxy_model_latency_seconds_bucket[5m])))",
@@ -113,11 +162,118 @@
     {
       "type": "timeseries",
       "title": "Estimated Cost",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
       "targets": [
         {
           "expr": "sum by (cache_hit, cache_type) (rate(ai_proxy_model_cost_total[5m]))",
           "legendFormat": "{{cache_hit}} / {{cache_type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests by App",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "targets": [
+        {
+          "expr": "sum by (app) (rate(ai_proxy_http_requests_total{app!=\"anonymous\"}[5m]))",
+          "legendFormat": "{{app}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Estimated Cost by App",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "targets": [
+        {
+          "expr": "sum by (app) (increase(ai_proxy_model_cost_total[1h]))",
+          "legendFormat": "{{app}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens by App and Model",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
+      "targets": [
+        {
+          "expr": "sum by (app, model) (rate(ai_proxy_model_tokens_total{kind=\"total\"}[5m]))",
+          "legendFormat": "{{app}} / {{model}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Blocked Prompts by App",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 56
+      },
+      "targets": [
+        {
+          "expr": "sum by (app, reason) (rate(ai_proxy_security_blocks_total[5m]))",
+          "legendFormat": "{{app}} ({{reason}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Security Events by App",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 64
+      },
+      "targets": [
+        {
+          "expr": "sum by (app, event) (rate(ai_proxy_security_events_total[5m]))",
+          "legendFormat": "{{app}} ({{event}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests by Model",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
+      "targets": [
+        {
+          "expr": "sum by (model, cache_type) (rate(ai_proxy_model_requests_total[5m]))",
+          "legendFormat": "{{model}} ({{cache_type}})",
+          "refId": "A"
         }
       ]
     }

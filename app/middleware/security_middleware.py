@@ -4,7 +4,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.core.config import ENABLE_PII_MASKING, MAX_PROMPT_CHARS
+from app.core.config import ENABLE_PII_MASKING, MAX_PROMPT_CHARS, get_app_policy
+from app.core.context import app_context
 from app.core.logger import logger
 from app.core.request_id import generate_request_id
 from app.observability.tracing import trace
@@ -44,6 +45,43 @@ def sanitize_messages(messages: list[dict]) -> list[dict]:
     return sanitized
 
 
+# Roles whose content comes from outside the application: end users, and tool / function
+# results (retrieved documents, web pages, API responses), where indirect prompt
+# injection arrives. System prompts are the app's own instructions and stay trusted.
+_UNTRUSTED_ROLES = {"user", "tool", "function"}
+
+
+def _message_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
+def _untrusted_message_texts(messages) -> list:
+    return [
+        text
+        for msg in messages if isinstance(msg, dict) and msg.get("role") in _UNTRUSTED_ROLES
+        for text in [_message_text(msg.get("content"))] if text.strip()
+    ]
+
+
+def _score_each(texts: list):
+    """Score each untrusted message on its own and keep the riskiest. The injection
+    classifier reads only the first ~512 tokens of its input, so one joined string
+    would let an injection near the end of a long tool result slip past."""
+    risk_score, pii_detections, injection_detections = 0.0, [], []
+    for text in texts:
+        score, pii, injections = calculate_risk_score(text)
+        risk_score = max(risk_score, score)
+        pii_detections.extend(pii)
+        injection_detections.extend(i for i in injections if i not in injection_detections)
+    return risk_score, pii_detections, injection_detections
+
+
 class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request.state.request_id = getattr(request.state, "request_id", None) or request.headers.get("x-request-id") or generate_request_id()
@@ -67,20 +105,11 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             
             # Extract prompt from messages array or prompt field
             if "messages" in payload:
-                messages = payload.get("messages", [])
-                user_contents = []
-                for msg in messages:
-                    if isinstance(msg, dict) and msg.get("role") == "user":
-                        content = msg.get("content")
-                        if isinstance(content, str):
-                            user_contents.append(content)
-                        elif isinstance(content, list):
-                            for part in content:
-                                if isinstance(part, dict) and part.get("type") == "text":
-                                    user_contents.append(part.get("text", ""))
-                prompt = "\n".join(user_contents)
+                untrusted_texts = _untrusted_message_texts(payload.get("messages", []))
+                prompt = "\n".join(untrusted_texts)
             else:
                 prompt = payload.get("prompt", "")
+                untrusted_texts = [prompt] if isinstance(prompt, str) else []
 
             # Reject oversize prompts up front with a clear error. Previously they were
             # scanned (slow on long text) and reported as "blocked by security policy".
@@ -93,15 +122,26 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                     },
                 )
 
-            risk_score, pii_detections, injection_detections = calculate_risk_score(prompt)
+            if "messages" in payload:
+                risk_score, pii_detections, injection_detections = _score_each(untrusted_texts)
+            else:
+                risk_score, pii_detections, injection_detections = calculate_risk_score(prompt)
             if ENABLE_PII_MASKING:
                 try:
-                    sanitized_prompt = sanitize_text(prompt, detections=pii_detections)
+                    # Detection offsets are per message for chat payloads, so they only
+                    # apply to a single prompt; chat messages are masked one by one below.
+                    sanitized_prompt = sanitize_text(
+                        prompt, detections=None if "messages" in payload else pii_detections
+                    )
                 except TypeError:
                     sanitized_prompt = sanitize_text(prompt)
             else:
                 sanitized_prompt = prompt
-            blocked = should_block_prompt(risk_score, injection_detections)
+            app_threshold = get_app_policy(app_context.get()).get("max_risk_score")
+            if app_threshold is None:
+                blocked = should_block_prompt(risk_score, injection_detections)
+            else:
+                blocked = should_block_prompt(risk_score, injection_detections, max_risk_score=float(app_threshold))
 
             tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
             if tracer:

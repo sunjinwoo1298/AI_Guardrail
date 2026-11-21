@@ -1,4 +1,4 @@
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, ConfigDict, validator
 from typing import Optional, List, Dict, Any
 
 from app.core.config import MAX_PROMPT_CHARS
@@ -17,6 +17,10 @@ class PromptRequest(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
+    # Keep every other OpenAI parameter (tools, tool_choice, response_format, top_p,
+    # seed, user, ...) so it can be forwarded; they used to be silently dropped.
+    model_config = ConfigDict(extra="allow")
+
     model: str
     messages: List[Dict[str, Any]]
     temperature: Optional[float] = None

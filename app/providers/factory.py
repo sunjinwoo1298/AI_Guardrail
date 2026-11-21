@@ -2,6 +2,7 @@ from app.providers.gemini_adapter import GeminiAdapter
 from app.providers.groq_adapter import GroqAdapter
 from app.providers.openai_adapter import OpenAIAdapter
 from app.providers.anthropic_adapter import AnthropicAdapter
+from app.providers.openrouter_adapter import OpenRouterAdapter
 from app.core.config import DEFAULT_PROVIDER
 
 _adapters = {
@@ -9,9 +10,13 @@ _adapters = {
     "groq": GroqAdapter(),
     "openai": OpenAIAdapter(),
     "anthropic": AnthropicAdapter(),
+    "openrouter": OpenRouterAdapter(),
 }
 
 def resolve_provider_and_model(model_name: str) -> tuple[str, str]:
+    if model_name.startswith("openrouter/"):
+        # "openrouter/google/gemma-4-31b-it:free" -> OpenRouter model "google/gemma-4-31b-it:free"
+        return "openrouter", model_name[len("openrouter/"):]
     if model_name.startswith("groq/"):
         return "groq", model_name[5:]
     elif model_name.startswith("gemini/"):

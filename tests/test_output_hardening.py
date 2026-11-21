@@ -32,14 +32,14 @@ def test_reasoning_is_redacted_when_exposed(monkeypatch):
 
 
 def test_live_stream_chunks_are_redacted(monkeypatch):
-    async def fake_lookup(query, model):
+    async def fake_lookup(query, model, **_kwargs):
         return None, None
 
     async def fake_stream():
         for text in ["Write to alice@", "corp.com today. ", "Done."]:
             yield {"choices": [{"index": 0, "delta": {"content": text, "reasoning": "x"}}]}
 
-    async def fake_create(messages, model, stream=False):
+    async def fake_create(messages, model, stream=False, **_kwargs):
         return fake_stream()
 
     async def fake_cache(**kwargs):

@@ -161,7 +161,7 @@ EMBEDDING_MODEL_NAME=BAAI/bge-small-en-v1.5
 CACHE_SIMILARITY_THRESHOLD=0.15
 CACHE_TTL_SECONDS=3600
 CHROMA_COLLECTION_NAME=semantic_cache
-SECONDARY_MODEL_NAME=llama-3.1-8b-instant
+SECONDARY_MODEL_NAME=openai/gpt-oss-20b
 REQUEST_TIMEOUT_SECONDS=20
 REDIS_TIMEOUT_SECONDS=0.5
 CHROMA_TIMEOUT_SECONDS=1.5
@@ -172,6 +172,35 @@ GROQ_CIRCUIT_BREAKER_FAILURE_THRESHOLD=3
 GROQ_CIRCUIT_BREAKER_RESET_SECONDS=30
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://otel-collector:4318/v1/traces
 ```
+
+## Using the Proxy as a Gateway for Your Apps
+
+Any app that uses an OpenAI SDK can route through the proxy by changing only `base_url` and `api_key`:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="<this app's proxy key>")
+client.chat.completions.create(model="groq/openai/gpt-oss-20b", messages=[...], tools=[...])
+```
+
+Streaming, tool calling, `response_format`, `max_tokens` and the other OpenAI parameters are forwarded. `GET /v1/models` lists the configured models (`AVAILABLE_MODELS`). The key can be sent as `Authorization: Bearer` (what the SDKs do) or `x-api-key`.
+
+**One key per app.** Name each key so metrics, logs and the Grafana "by app" panels show which app is spending tokens or being blocked. Cached answers are never shared between apps or conversations.
+
+```env
+API_KEYS=checkout:sk-proxy-checkout-xxxx,support-bot:sk-proxy-support-yyyy
+```
+
+**Per-app policies (optional).** Rate limits, allowed models (wildcards) and the risk threshold per app; apps without a policy use the global settings:
+
+```env
+APP_POLICIES={"support-bot": {"rpm": 30, "tpm": 4000, "allowed_models": ["groq/*", "openrouter/*:free"], "max_risk_score": 0.9}}
+```
+
+**Providers.** Model names are `<provider>/<model>`: `groq/…`, `openai/…`, `anthropic/…`, `gemini/…`, `openrouter/…`. OpenRouter (`OPEN_ROUTER_API_KEY`) only allows free `:free` models unless `OPENROUTER_FREE_ONLY=false`. Tool calling and JSON mode work on OpenAI-compatible providers (Groq, OpenAI, OpenRouter).
+
+**Injection checks.** User messages and tool/function results (retrieved documents, web pages) are scanned; the app's system prompt is trusted. When only the local classifier flags a prompt, Llama Prompt Guard 2 on Groq gives a second opinion (`INJECTION_VERIFIER_ENABLED`) to avoid blocking harmless requests.
 
 ## Run the Full Stack
 

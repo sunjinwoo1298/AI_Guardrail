@@ -4,7 +4,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.core.config import API_KEYS, REQUIRE_API_KEY, RPM_LIMIT_PER_MINUTE, TPM_LIMIT_PER_MINUTE
+from app.core.config import API_KEY_APPS, API_KEYS, REQUIRE_API_KEY, get_app_policy, RPM_LIMIT_PER_MINUTE, TPM_LIMIT_PER_MINUTE
+from app.core.context import app_context
 from app.core.logger import logger
 from app.core.request_id import generate_request_id
 from app.core.tokens import estimate_messages_tokens, estimate_text_tokens
@@ -17,8 +18,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path in {"/health", "/ready", "/metrics", "/"}:
             return await call_next(request)
 
-        if request.url.path.startswith(("/generate", "/stream", "/v1/chat/completions")) and REQUIRE_API_KEY:
+        if request.url.path.startswith(("/generate", "/stream", "/v1/")) and REQUIRE_API_KEY:
+            # Accept the proxy key as x-api-key or as "Authorization: Bearer <key>", which
+            # is what the OpenAI SDKs send, so apps only change base_url and api_key.
             provided_key = request.headers.get("x-api-key", "").strip()
+            auth_header = request.headers.get("authorization", "")
+            if not provided_key and auth_header.lower().startswith("bearer "):
+                provided_key = auth_header[7:].strip()
             if not provided_key or provided_key not in API_KEYS:
                 logger.warning("Unauthorized request rejected for path=%s", request.url.path)
                 return JSONResponse(
@@ -27,6 +33,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
 
             request.state.api_key = provided_key
+            request.state.app_name = API_KEY_APPS.get(provided_key, "anonymous")
+            app_context.set(request.state.app_name)
             estimated_tokens = 0
             if request.url.path.startswith(("/generate", "/stream", "/v1/chat/completions")):
                 try:
@@ -48,8 +56,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             rate_limit = check_and_consume(
                 provided_key,
                 estimated_tokens,
-                rpm_limit=RPM_LIMIT_PER_MINUTE,
-                tpm_limit=TPM_LIMIT_PER_MINUTE,
+                # Per-app limits from APP_POLICIES, else the global defaults.
+                rpm_limit=int(get_app_policy(request.state.app_name).get("rpm", RPM_LIMIT_PER_MINUTE)),
+                tpm_limit=int(get_app_policy(request.state.app_name).get("tpm", TPM_LIMIT_PER_MINUTE)),
             )
             request.state.rate_limit = rate_limit
             request.state.reserved_tokens = estimated_tokens

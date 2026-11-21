@@ -7,6 +7,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+OPEN_ROUTER_API_KEY = os.getenv("OPEN_ROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+# Only allow OpenRouter's free models (":free"), so proxy traffic never spends credits.
+OPENROUTER_FREE_ONLY = os.getenv("OPENROUTER_FREE_ONLY", "true").lower() == "true"
 DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "groq").lower()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "semantic_cache")
@@ -19,7 +22,55 @@ BLOCK_HIGH_RISK_PROMPTS = os.getenv("BLOCK_HIGH_RISK_PROMPTS", "true").lower() =
 MAX_RISK_SCORE = float(os.getenv("MAX_RISK_SCORE", "0.8"))
 ALLOW_EMAILS = os.getenv("ALLOW_EMAILS", "false").lower() == "true"
 ALLOW_PHONE_NUMBERS = os.getenv("ALLOW_PHONE_NUMBERS", "false").lower() == "true"
-API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.strip()]
+def _parse_api_keys(raw: str) -> dict:
+    """API_KEYS entries are either "key" or "appname:key" (appname = letters, digits,
+    "_" or "-"). The app name labels metrics and logs so you can see which application
+    is spending tokens or being blocked; unnamed keys get "key-<hash prefix>" so the
+    secret itself never appears in metrics or logs."""
+    import hashlib
+    import re
+
+    apps = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_-]{1,40}):(.+)", entry)
+        if match:
+            apps[match.group(2).strip()] = match.group(1)
+        else:
+            apps[entry] = "key-" + hashlib.sha256(entry.encode("utf-8")).hexdigest()[:8]
+    return apps
+
+
+API_KEY_APPS = _parse_api_keys(os.getenv("API_KEYS", ""))
+API_KEYS = list(API_KEY_APPS)
+
+
+def _parse_app_policies(raw: str) -> dict:
+    """APP_POLICIES is JSON keyed by app name (the name in API_KEYS "appname:key"):
+        {"support-bot": {"rpm": 30, "tpm": 4000,
+                         "allowed_models": ["groq/*", "openrouter/*:free"],
+                         "max_risk_score": 0.9}}
+    Every field is optional; apps without a policy use the global settings."""
+    import json
+
+    if not raw.strip():
+        return {}
+    try:
+        policies = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"APP_POLICIES is not valid JSON: {exc}") from exc
+    if not isinstance(policies, dict) or not all(isinstance(v, dict) for v in policies.values()):
+        raise ValueError('APP_POLICIES must be a JSON object like {"app-name": {"rpm": 30}}')
+    return policies
+
+
+APP_POLICIES = _parse_app_policies(os.getenv("APP_POLICIES", ""))
+
+
+def get_app_policy(app_name: str) -> dict:
+    return APP_POLICIES.get(app_name, {})
 REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "true").lower() == "true"
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "4000"))
 MAX_RESPONSE_CHARS = int(os.getenv("MAX_RESPONSE_CHARS", "12000"))
@@ -36,12 +87,29 @@ PROMPT_INJECTION_MODEL_NAME = os.getenv(
     "PROMPT_INJECTION_MODEL_NAME",
     "protectai/deberta-v3-base-prompt-injection-v2",
 )
+# Second-opinion injection model (Llama Prompt Guard 2 on Groq), consulted only when
+# the local classifier is the sole signal; cuts false positives on harmless prompts.
+INJECTION_VERIFIER_ENABLED = os.getenv("INJECTION_VERIFIER_ENABLED", "true").lower() == "true"
+INJECTION_VERIFIER_MODEL = os.getenv("INJECTION_VERIFIER_MODEL", "meta-llama/llama-prompt-guard-2-86m")
+INJECTION_VERIFIER_THRESHOLD = float(os.getenv("INJECTION_VERIFIER_THRESHOLD", "0.5"))
+INJECTION_VERIFIER_TIMEOUT_SECONDS = float(os.getenv("INJECTION_VERIFIER_TIMEOUT_SECONDS", "3"))
 SYSTEM_PROMPT_CANARY = os.getenv("SYSTEM_PROMPT_CANARY", "AI_GUARDRAIL_SYSTEM_CANARY_7f3b9a")
 MAX_BEHAVIOR_RISK_SCORE = float(os.getenv("MAX_BEHAVIOR_RISK_SCORE", "0.35"))
 BEHAVIOR_RISK_WINDOW_SECONDS = int(os.getenv("BEHAVIOR_RISK_WINDOW_SECONDS", "300"))
 BEHAVIOR_RISK_RATE_THRESHOLD = int(os.getenv("BEHAVIOR_RISK_RATE_THRESHOLD", "4"))
 RPM_LIMIT_PER_MINUTE = int(os.getenv("RPM_LIMIT_PER_MINUTE", "120"))
 TPM_LIMIT_PER_MINUTE = int(os.getenv("TPM_LIMIT_PER_MINUTE", "12000"))
+# Models advertised by GET /v1/models (comma-separated, "<provider>/<model>").
+AVAILABLE_MODELS = [
+    m.strip()
+    for m in os.getenv(
+        "AVAILABLE_MODELS",
+        "groq/openai/gpt-oss-120b,groq/openai/gpt-oss-20b,groq/qwen/qwen3.8-27b,"
+        "openrouter/openrouter/free,openrouter/nvidia/nemotron-3.5-super-vl:free,openrouter/google/gemma-4-31b-it:free,"
+        "openai/gpt-4o-mini,gemini/gemini-2.5-flash,anthropic/claude-opus-5-5",
+    ).split(",")
+    if m.strip()
+]
 # Output hardening options.
 # HTML-escape responses (for clients that render them as raw HTML). Off by default:
 # JSON clients and the bundled console render text safely, and escaping corrupts code.
@@ -76,8 +144,8 @@ PII_ENTITIES = frozenset(
 def validate_settings():
     errors = []
 
-    if DEFAULT_PROVIDER not in {"groq", "openai", "gemini", "anthropic"}:
-        errors.append(f"DEFAULT_PROVIDER must be one of: groq, openai, gemini, anthropic")
+    if DEFAULT_PROVIDER not in {"groq", "openai", "gemini", "anthropic", "openrouter"}:
+        errors.append("DEFAULT_PROVIDER must be one of: groq, openai, gemini, anthropic, openrouter")
 
     if DEFAULT_PROVIDER == "groq" and not GROQ_API_KEY:
         errors.append("GROQ_API_KEY is required when DEFAULT_PROVIDER=groq")
@@ -87,6 +155,8 @@ def validate_settings():
         errors.append("GEMINI_API_KEY is required when DEFAULT_PROVIDER=gemini")
     elif DEFAULT_PROVIDER == "anthropic" and not ANTHROPIC_API_KEY:
         errors.append("ANTHROPIC_API_KEY is required when DEFAULT_PROVIDER=anthropic")
+    elif DEFAULT_PROVIDER == "openrouter" and not OPEN_ROUTER_API_KEY:
+        errors.append("OPEN_ROUTER_API_KEY is required when DEFAULT_PROVIDER=openrouter")
 
     if not 0.0 <= CACHE_SIMILARITY_THRESHOLD <= 1.0:
         errors.append("CACHE_SIMILARITY_THRESHOLD must be between 0.0 and 1.0")

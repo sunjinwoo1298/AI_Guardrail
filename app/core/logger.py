@@ -1,6 +1,6 @@
 import json
 import logging
-from app.core.context import request_id_context
+from app.core.context import app_context, request_id_context
 
 
 class JsonFormatter(logging.Formatter):
@@ -11,11 +11,15 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
             "request_id": getattr(record, "request_id", None) or request_id_context.get() or "-",
+            "app": app_context.get(),
         }
         for key in ("endpoint", "method", "status", "risk_score", "cache_hit", "cache_type", "reason"):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value
+        # Keep tracebacks: logger.exception() output was silently dropped before.
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, default=str)
 
 

@@ -2,13 +2,15 @@ from typing import Optional
 
 from prometheus_client import Counter, Gauge, Histogram
 
+from app.core.context import app_context, model_context
+
 LATENCY_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0)
 RISK_BUCKETS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
 
 HTTP_REQUESTS_TOTAL = Counter(
     "ai_proxy_http_requests_total",
     "Total HTTP requests processed by the AI proxy",
-    ["method", "endpoint", "status"],
+    ["app", "method", "endpoint", "status"],
 )
 
 HTTP_REQUEST_DURATION_SECONDS = Histogram(
@@ -38,26 +40,26 @@ CACHE_WRITES_TOTAL = Counter(
 MODEL_REQUESTS_TOTAL = Counter(
     "ai_proxy_model_requests_total",
     "Requests that reached the model or were satisfied from cache",
-    ["endpoint", "cache_hit", "cache_type"],
+    ["app", "model", "endpoint", "cache_hit", "cache_type"],
 )
 
 MODEL_LATENCY_SECONDS = Histogram(
     "ai_proxy_model_latency_seconds",
     "Model or cache response latency in seconds",
-    ["endpoint", "cache_hit", "cache_type"],
+    ["app", "model", "endpoint", "cache_hit", "cache_type"],
     buckets=LATENCY_BUCKETS,
 )
 
 MODEL_TOKENS_TOTAL = Counter(
     "ai_proxy_model_tokens_total",
     "Token usage observed by the proxy",
-    ["endpoint", "kind", "cache_hit", "cache_type"],
+    ["app", "model", "endpoint", "kind", "cache_hit", "cache_type"],
 )
 
 MODEL_COST_TOTAL = Counter(
     "ai_proxy_model_cost_total",
     "Estimated model cost accumulated by the proxy",
-    ["endpoint", "cache_hit", "cache_type"],
+    ["app", "model", "endpoint", "cache_hit", "cache_type"],
 )
 
 STREAM_DURATION_SECONDS = Histogram(
@@ -70,13 +72,13 @@ STREAM_DURATION_SECONDS = Histogram(
 SECURITY_EVENTS_TOTAL = Counter(
     "ai_proxy_security_events_total",
     "Security guardrail events",
-    ["event", "action"],
+    ["app", "event", "action"],
 )
 
 SECURITY_BLOCKS_TOTAL = Counter(
     "ai_proxy_security_blocks_total",
     "Requests blocked by security policies",
-    ["reason"],
+    ["app", "reason"],
 )
 
 SECURITY_RISK_SCORE = Histogram(
@@ -88,7 +90,7 @@ SECURITY_RISK_SCORE = Histogram(
 CACHE_SAVED_COST_TOTAL = Counter(
     "ai_proxy_cache_saved_cost_total",
     "Estimated USD cost avoided by serving responses from cache",
-    ["cache_type"],
+    ["app", "cache_type"],
 )
 
 UNPRICED_REQUESTS_TOTAL = Counter(
@@ -111,8 +113,8 @@ def set_active_request_count(delta: int):
         ACTIVE_REQUESTS.dec(abs(delta))
 
 
-def record_http_request(method: str, endpoint: str, status: int, duration_seconds: float):
-    HTTP_REQUESTS_TOTAL.labels(method=method, endpoint=endpoint, status=str(status)).inc()
+def record_http_request(method: str, endpoint: str, status: int, duration_seconds: float, app: str = "anonymous"):
+    HTTP_REQUESTS_TOTAL.labels(app=app, method=method, endpoint=endpoint, status=str(status)).inc()
     HTTP_REQUEST_DURATION_SECONDS.labels(method=method, endpoint=endpoint).observe(duration_seconds)
 
 
@@ -137,36 +139,49 @@ def record_model_observation(
 ):
     cache_hit_label = "true" if cache_hit else "false"
     cache_type_label = cache_type or "none"
+    app, model = app_context.get(), model_context.get()
 
     MODEL_REQUESTS_TOTAL.labels(
+        app=app,
+        model=model,
         endpoint=endpoint,
         cache_hit=cache_hit_label,
         cache_type=cache_type_label,
     ).inc()
     MODEL_LATENCY_SECONDS.labels(
+        app=app,
+        model=model,
         endpoint=endpoint,
         cache_hit=cache_hit_label,
         cache_type=cache_type_label,
     ).observe(latency_seconds)
     MODEL_TOKENS_TOTAL.labels(
+        app=app,
+        model=model,
         endpoint=endpoint,
         kind="prompt",
         cache_hit=cache_hit_label,
         cache_type=cache_type_label,
     ).inc(prompt_tokens)
     MODEL_TOKENS_TOTAL.labels(
+        app=app,
+        model=model,
         endpoint=endpoint,
         kind="completion",
         cache_hit=cache_hit_label,
         cache_type=cache_type_label,
     ).inc(completion_tokens)
     MODEL_TOKENS_TOTAL.labels(
+        app=app,
+        model=model,
         endpoint=endpoint,
         kind="total",
         cache_hit=cache_hit_label,
         cache_type=cache_type_label,
     ).inc(total_tokens)
     MODEL_COST_TOTAL.labels(
+        app=app,
+        model=model,
         endpoint=endpoint,
         cache_hit=cache_hit_label,
         cache_type=cache_type_label,
@@ -185,16 +200,16 @@ def record_security_risk(risk_score: float):
 
 
 def record_security_event(event: str, action: str = "detected"):
-    SECURITY_EVENTS_TOTAL.labels(event=event, action=action).inc()
+    SECURITY_EVENTS_TOTAL.labels(app=app_context.get(), event=event, action=action).inc()
 
 
 def record_security_block(reason: str):
-    SECURITY_BLOCKS_TOTAL.labels(reason=reason).inc()
+    SECURITY_BLOCKS_TOTAL.labels(app=app_context.get(), reason=reason).inc()
 
 
 def record_cache_saved_cost(cache_type: str, saved_cost: float):
     if saved_cost > 0:
-        CACHE_SAVED_COST_TOTAL.labels(cache_type=cache_type).inc(saved_cost)
+        CACHE_SAVED_COST_TOTAL.labels(app=app_context.get(), cache_type=cache_type).inc(saved_cost)
 
 
 def record_unpriced_model(model: str):

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 import uuid
 import threading
 from typing import Optional, AsyncGenerator
 
+import httpx
 from fastapi import HTTPException
 
 from app.core.config import (
@@ -73,6 +75,7 @@ class _StreamRedactor:
         return sanitize_response(ready) if ready else ""
 from app.core.cost_calculator import calculate_cost, is_priced
 from app.core.tokens import estimate_messages_tokens, estimate_text_tokens
+from app.core.context import model_context
 from app.core.logger import logger
 from app.core.request_id import generate_request_id
 from app.core.resilience import CircuitBreaker, CircuitOpenError, retry_async
@@ -181,19 +184,78 @@ def prepare_messages(query_or_messages: str | list[dict]) -> list[dict]:
     return query_or_messages
 
 
-async def _lookup_cache(query: str, model: str):
+# OpenAI parameters the proxy forwards to the provider. Routing/transport fields
+# (model, messages, stream) are handled by the proxy itself.
+_PROXY_OWNED_PARAMS = {"model", "messages", "stream"}
+
+
+def clean_params(params: Optional[dict]) -> dict:
+    return {k: v for k, v in (params or {}).items() if k not in _PROXY_OWNED_PARAMS and v is not None}
+
+
+def _app_fingerprint(security_metadata: Optional[dict]) -> str:
+    api_key = _api_key_from_context(security_metadata)
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16] if api_key else "anonymous"
+
+
+def _cache_namespace(model: str, messages: list[dict], params: dict, security_metadata: Optional[dict]) -> str:
+    """Scope cached answers to one app (API key), one conversation context and one set
+    of request parameters.
+
+    The cache used to be keyed only by model + last user message, so an app with a
+    different system prompt, or a user in a different conversation, was served
+    another app's / user's answer. The last user message's text stays out of the
+    scope (it is the lookup query), so paraphrases within the same app and context
+    can still hit the semantic cache.
+    """
+    last_user = None
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            last_user = i
+    context = [{"role": "user", "content": "<query>"} if i == last_user else m for i, m in enumerate(messages)]
+    material = json.dumps(
+        {"app": _app_fingerprint(security_metadata), "context": context, "params": params},
+        sort_keys=True,
+        default=str,
+    )
+    return f"{model}#{hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _upstream_client_error(exc: BaseException) -> Optional[HTTPException]:
+    """A 4xx from the provider (bad tool schema, unsupported parameter, ...) is the
+    caller's error: return it to them instead of trying the fallback model and
+    reporting a misleading 503."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if 400 <= status < 500 and status not in (408, 429):
+            try:
+                body = exc.response.json()
+                message = (body.get("error") or {}).get("message") if isinstance(body, dict) else None
+            except Exception:
+                message = None
+            return HTTPException(status_code=status, detail={
+                "message": message or f"Upstream provider rejected the request ({status})",
+                "type": "invalid_request_error",
+                "code": "upstream_client_error",
+            })
+    return None
+
+
+async def _lookup_cache(query: str, model: str, semantic: bool = True):
     if not query:
         return None, None
     exact_cache = await get_exact_cache(query, model)
     if exact_cache is not None:
         return "exact", exact_cache
+    if not semantic:
+        return None, None
     semantic_cache = await search_semantic_cache(query, model)
     if semantic_cache is not None:
         return "semantic", semantic_cache
     return None, None
 
 
-async def _create_completion(messages: list[dict], model: str, stream: bool = False):
+async def _create_completion(messages: list[dict], model: str, stream: bool = False, params: Optional[dict] = None):
     provider, real_model = resolve_provider_and_model(model)
     breaker = get_circuit_breaker(model)
 
@@ -204,9 +266,9 @@ async def _create_completion(messages: list[dict], model: str, stream: bool = Fa
 
     async def _call():
         if stream:
-            return await adapter.stream(messages=messages, model=real_model)
+            return await adapter.stream(messages=messages, model=real_model, **(params or {}))
         else:
-            return await adapter.generate(messages=messages, model=real_model)
+            return await adapter.generate(messages=messages, model=real_model, **(params or {}))
 
     try:
         result = await retry_async(
@@ -220,6 +282,31 @@ async def _create_completion(messages: list[dict], model: str, stream: bool = Fa
     except Exception:
         breaker.record_failure()
         raise
+
+
+async def _open_stream(messages: list[dict], model: str, params: Optional[dict] = None):
+    """Start a provider stream and read its first chunk before returning.
+
+    Provider errors (429 rate limits, 5xx) only surface once a stream is read, which
+    happened after the primary/fallback decision, so they became a 500 instead of
+    falling back. Reading the first chunk here lets the caller fall back properly.
+    """
+    stream = await _create_completion(messages, model, stream=True, params=params)
+    try:
+        first = await stream.__anext__()
+    except StopAsyncIteration:
+        first = None
+    except Exception:
+        get_circuit_breaker(model).record_failure()
+        raise
+
+    async def replay():
+        if first is not None:
+            yield first
+        async for chunk in stream:
+            yield chunk
+
+    return replay()
 
 
 def _current_tracer():
@@ -263,7 +350,8 @@ def _reserved_tokens_from_context(security_context: Optional[dict]) -> int:
 async def generate_response(
     query_or_messages: str | list[dict],
     model: str | None = None,
-    security_context: Optional[dict] = None
+    security_context: Optional[dict] = None,
+    params: Optional[dict] = None,
 ) -> tuple[dict, dict]:
     start_time = time.time()
     request_id = generate_request_id()
@@ -275,13 +363,18 @@ async def generate_response(
 
     # Resolve default model if not provided
     active_model = model or "groq/openai/gpt-oss-120b"
+    params = clean_params(params)
+    cache_ns = _cache_namespace(active_model, messages, params, security_metadata)
+    # A paraphrase must not stand in for a tool-calling turn.
+    allow_semantic = "tools" not in params and "functions" not in params
+    model_context.set(active_model)
 
     try:
         cache_span = tracer.start_as_current_span("cache.lookup") if tracer else None
         if cache_span:
             cache_span.__enter__()
         try:
-            cache_type, cached = await _lookup_cache(query, active_model)
+            cache_type, cached = await _lookup_cache(query, cache_ns, semantic=allow_semantic)
         finally:
             if cache_span:
                 cache_span.__exit__(None, None, None)
@@ -380,7 +473,7 @@ async def generate_response(
 
                 await cache_response(
                     prompt=query,
-                    cache_model=active_model,
+                    cache_model=cache_ns,
                     response=response_text,
                     request_id=request_id,
                     model_name=active_model,
@@ -442,14 +535,18 @@ async def generate_response(
             model_span.__enter__()
         try:
             try:
-                chat_completion = await _create_completion(messages, active_model, stream=False)
+                chat_completion = await _create_completion(messages, active_model, stream=False, params=params)
                 used_model = active_model
             except Exception as primary_exc:
+                client_error = _upstream_client_error(primary_exc)
+                if client_error:
+                    raise client_error
                 logger.warning(f"Primary model {active_model} failed, trying fallback: {primary_exc}")
                 try:
                     fallback_model = SECONDARY_MODEL_NAME
-                    chat_completion = await _create_completion(messages, fallback_model, stream=False)
+                    chat_completion = await _create_completion(messages, fallback_model, stream=False, params=params)
                     used_model = fallback_model
+                    model_context.set(used_model)
                 except Exception as secondary_exc:
                     logger.error(f"Both model attempts failed: primary={primary_exc} secondary={secondary_exc}")
                     latency = time.time() - start_time
@@ -480,7 +577,7 @@ async def generate_response(
         prompt_tokens, completion_tokens, total_tokens, usage_source = _resolve_usage(
             chat_completion.get("usage"),
             messages,
-            chat_completion["choices"][0]["message"]["content"],
+            chat_completion["choices"][0]["message"].get("content") or "",
         )
         estimated_cost = _priced_cost(used_model, prompt_tokens, completion_tokens)
 
@@ -488,8 +585,11 @@ async def generate_response(
         if redaction_span:
             redaction_span.__enter__()
         try:
-            raw_response_text = chat_completion["choices"][0]["message"]["content"]
-            response_text = _truncate_response(sanitize_response(raw_response_text))
+            first_message = chat_completion["choices"][0]["message"]
+            raw_response_text = first_message.get("content")
+            response_text = _truncate_response(sanitize_response(raw_response_text)) if raw_response_text else raw_response_text
+            # Tool calls are per-conversation actions, not reusable answers: never cache them.
+            cacheable = bool(raw_response_text) and not first_message.get("tool_calls")
         finally:
             if redaction_span:
                 redaction_span.__exit__(None, None, None)
@@ -506,10 +606,10 @@ async def generate_response(
             estimated_cost=estimated_cost
         )
 
-        if query:
+        if query and cacheable:
             await cache_response(
                 prompt=query,
-                cache_model=active_model,
+                cache_model=cache_ns,
                 response=response_text,
                 request_id=request_id,
                 model_name=used_model,
@@ -548,15 +648,21 @@ async def generate_response(
 
         return chat_completion, metadata_payload
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error generating response: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"LLM API Error: {str(e)}")
+        client_error = _upstream_client_error(e)
+        if client_error:
+            raise client_error
+        logger.exception(f"Error generating response: {e!r}")
+        raise HTTPException(status_code=500, detail=f"LLM API Error: {e!r}")
 
 
 async def stream_response(
     query_or_messages: str | list[dict],
     model: str | None = None,
-    security_context: Optional[dict] = None
+    security_context: Optional[dict] = None,
+    params: Optional[dict] = None,
 ) -> AsyncGenerator[tuple[str, dict], None]:
     start_time = time.time()
     request_id = generate_request_id()
@@ -567,13 +673,18 @@ async def stream_response(
     query = extract_cache_query(messages)
 
     active_model = model or "groq/openai/gpt-oss-120b"
+    params = clean_params(params)
+    cache_ns = _cache_namespace(active_model, messages, params, security_metadata)
+    # A paraphrase must not stand in for a tool-calling turn.
+    allow_semantic = "tools" not in params and "functions" not in params
+    model_context.set(active_model)
 
     try:
         cache_span = tracer.start_as_current_span("cache.lookup") if tracer else None
         if cache_span:
             cache_span.__enter__()
         try:
-            cache_type, cached = await _lookup_cache(query, active_model)
+            cache_type, cached = await _lookup_cache(query, cache_ns, semantic=allow_semantic)
         finally:
             if cache_span:
                 cache_span.__exit__(None, None, None)
@@ -668,7 +779,7 @@ async def stream_response(
 
                 await cache_response(
                     prompt=query,
-                    cache_model=active_model,
+                    cache_model=cache_ns,
                     response=response_text,
                     request_id=request_id,
                     model_name=active_model,
@@ -726,14 +837,18 @@ async def stream_response(
             model_span.__enter__()
         try:
             try:
-                stream = await _create_completion(messages, active_model, stream=True)
+                stream = await _open_stream(messages, active_model, params=params)
                 used_model = active_model
             except Exception as primary_exc:
+                client_error = _upstream_client_error(primary_exc)
+                if client_error:
+                    raise client_error
                 logger.warning(f"Primary stream model {active_model} failed, trying fallback: {primary_exc}")
                 try:
                     fallback_model = SECONDARY_MODEL_NAME
-                    stream = await _create_completion(messages, fallback_model, stream=True)
+                    stream = await _open_stream(messages, fallback_model, params=params)
                     used_model = fallback_model
+                    model_context.set(used_model)
                 except Exception as secondary_exc:
                     logger.error(f"Stream degraded: primary={primary_exc} secondary={secondary_exc}")
                     latency = time.time() - start_time
@@ -774,8 +889,10 @@ async def stream_response(
             out = {k: v for k, v in template.items() if k not in ("usage", "x_groq")}
             choice = dict((template.get("choices") or [{}])[0])
             delta = {k: v for k, v in (choice.get("delta") or {}).items() if k not in _REASONING_KEYS}
+            delta.pop("tool_calls", None)
             delta["content"] = text
             choice["delta"] = delta
+            choice["finish_reason"] = None  # sent once, after all text, by the finish chunk
             choice.setdefault("index", 0)
             out["choices"] = [choice]
             return out
@@ -787,17 +904,43 @@ async def stream_response(
             emitted_chars += len(text)
             return text
 
+        finish_chunk: Optional[dict] = None
+        streamed_tool_calls = False
+
+        def _passthrough_chunk(template: dict, finish_reason=None) -> dict:
+            """Forward a non-text chunk (tool-call deltas, the finish marker) without
+            reasoning fields and without text, which goes through the redactor."""
+            out = {k: v for k, v in template.items() if k not in ("usage", "x_groq")}
+            choice = dict((template.get("choices") or [{}])[0])
+            choice["delta"] = {k: v for k, v in (choice.get("delta") or {}).items()
+                               if k not in _REASONING_KEYS and k != "content"}
+            choice["finish_reason"] = finish_reason
+            choice.setdefault("index", 0)
+            out["choices"] = [choice]
+            return out
+
         async for chunk in stream:
             choices = chunk.get("choices", [])
             if choices:
                 last_chunk = chunk
-                delta = choices[0].get("delta", {})
-                content = delta.get("content", "")
+                choice0 = choices[0]
+                delta = choice0.get("delta") or {}
+                content = delta.get("content") or ""
                 if content:
                     full_response += content
                     ready = _within_limit(redactor.feed(content))
                     if ready:
                         yield "content", _redacted_chunk(chunk, ready)
+                if delta.get("tool_calls"):
+                    # Tool-call deltas used to be dropped, breaking agent apps. Flush any
+                    # held-back text first so order is preserved.
+                    streamed_tool_calls = True
+                    pending = _within_limit(redactor.flush())
+                    if pending:
+                        yield "content", _redacted_chunk(chunk, pending)
+                    yield "content", _passthrough_chunk(chunk)
+                if choice0.get("finish_reason"):
+                    finish_chunk = chunk
 
             # Providers report real usage in a final chunk (Groq may nest it under x_groq).
             chunk_usage = chunk.get("usage") or (chunk.get("x_groq") or {}).get("usage")
@@ -807,6 +950,8 @@ async def stream_response(
         tail = _within_limit(redactor.flush())
         if tail:
             yield "content", _redacted_chunk(last_chunk or {"object": "chat.completion.chunk", "model": used_model}, tail)
+        if finish_chunk is not None:
+            yield "content", _passthrough_chunk(finish_chunk, finish_chunk["choices"][0].get("finish_reason"))
 
         latency = time.time() - start_time
 
@@ -835,10 +980,11 @@ async def stream_response(
             if redaction_span:
                 redaction_span.__exit__(None, None, None)
 
-        if query:
+        # A streamed tool call is a per-conversation action, not a reusable answer.
+        if query and full_response and not streamed_tool_calls:
             await cache_response(
                 prompt=query,
-                cache_model=active_model,
+                cache_model=cache_ns,
                 response=sanitized_full_response,
                 request_id=request_id,
                 model_name=used_model,
@@ -872,11 +1018,16 @@ async def stream_response(
         yield "metadata", metadata_payload
 
     except Exception as e:
-        logger.error(f"Error streaming response: {str(e)}")
+        logger.exception(f"Error streaming response: {e!r}")
         api_key = _api_key_from_context(security_metadata)
         if api_key:
             refund_tokens(api_key, _reserved_tokens_from_context(security_metadata))
         record_stream_duration(cache_hit=False, cache_type="error", duration_seconds=time.time() - start_time)
+        client_error = _upstream_client_error(e)
+        if client_error:
+            raise client_error
+        if isinstance(e, HTTPException):
+            raise
         raise HTTPException(status_code=500, detail=f"LLM API Stream Error: {str(e)}")
 
 

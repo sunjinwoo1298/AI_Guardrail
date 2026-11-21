@@ -175,7 +175,14 @@ async def get_exact_cache(prompt: str, model: str):
                     span_ctx.__exit__(None, None, None)
 
         return await asyncio.to_thread(_sync_lookup)
-    return await asyncio.wait_for(_lookup(), timeout=REDIS_TIMEOUT_SECONDS)
+    # The cache is optional: a slow or unavailable Redis is a miss, never a failed
+    # request. (Uncaught, the first lookup after startup timed out and returned a 500.)
+    try:
+        return await asyncio.wait_for(_lookup(), timeout=REDIS_TIMEOUT_SECONDS)
+    except Exception as exc:
+        logger.warning(f"Exact cache lookup failed: {exc!r}")
+        record_cache_lookup("redis", "error")
+        return None
 
 
 async def search_semantic_cache(prompt: str, model: str):

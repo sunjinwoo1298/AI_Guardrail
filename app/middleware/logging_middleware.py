@@ -37,7 +37,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         finally:
             process_time = time.perf_counter() - start_time
             set_active_request_count(-1)
-            record_http_request(request.method, endpoint, status_code, process_time)
+            record_http_request(request.method, endpoint, status_code, process_time,
+                                app=getattr(request.state, "app_name", None) or "anonymous")
             logger.info(
                 f"Request: {request.method} {request.url} - Process Time: {process_time:.2f} seconds"
             )

@@ -19,7 +19,7 @@ def test_generate_accepts_valid_api_key(monkeypatch):
     monkeypatch.setattr(groq_service, "get_exact_cache", fake_none)
     monkeypatch.setattr(groq_service, "search_semantic_cache", fake_none)
 
-    async def fake_create_completion(messages, model, stream=False):
+    async def fake_create_completion(messages, model, stream=False, **_kwargs):
         return {
             "choices": [{"message": {"role": "assistant", "content": "ok"}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}

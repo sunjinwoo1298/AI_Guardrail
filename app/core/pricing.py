@@ -24,11 +24,13 @@ MODEL_PRICING_PER_MILLION = {
     "claude-opus-5-5": {"input": 4.00, "output": 20.00},
 }
 
-PROVIDER_PREFIXES = ("groq/", "openai/", "gemini/", "anthropic/")
+PROVIDER_PREFIXES = ("openrouter/", "groq/", "openai/", "gemini/", "anthropic/")
 
 
 def get_pricing(model_name: str):
     """Resolve a model string (with or without routing prefix) to its price entry, or None."""
+    if model_name.endswith(":free") or model_name.endswith("openrouter/free"):
+        return {"input": 0.0, "output": 0.0}  # OpenRouter free models
     candidates = [model_name]
     # Strip one routing prefix at a time: "groq/openai/gpt-oss-120b" -> "openai/gpt-oss-120b" -> "gpt-oss-120b"
     name = model_name

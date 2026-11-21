@@ -6,8 +6,16 @@ from app.providers.base import BaseLLMAdapter
 from app.core.config import OPENAI_API_KEY
 
 class OpenAIAdapter(BaseLLMAdapter):
-    def __init__(self):
-        self.api_key = OPENAI_API_KEY
+    """Any OpenAI-compatible chat-completions API (OpenAI itself, OpenRouter, ...)."""
+
+    chat_url = "https://api.openai.com/v1/chat/completions"
+    key_name = "OPENAI_API_KEY"
+
+    def __init__(self, api_key: str | None = None):
+        self.api_key = api_key if api_key is not None else OPENAI_API_KEY
+
+    def extra_headers(self) -> dict:
+        return {}
 
     async def generate(
         self,
@@ -18,11 +26,12 @@ class OpenAIAdapter(BaseLLMAdapter):
         **kwargs
     ) -> dict:
         if not self.api_key:
-            raise ValueError("OPENAI_API_KEY is not configured")
+            raise ValueError(f"{self.key_name} is not configured")
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            **self.extra_headers(),
         }
         
         payload = {
@@ -41,7 +50,7 @@ class OpenAIAdapter(BaseLLMAdapter):
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "https://api.openai.com/v1/chat/completions",
+                self.chat_url,
                 headers=headers,
                 json=payload,
                 timeout=30.0
@@ -58,11 +67,12 @@ class OpenAIAdapter(BaseLLMAdapter):
         **kwargs
     ) -> AsyncGenerator[dict, None]:
         if not self.api_key:
-            raise ValueError("OPENAI_API_KEY is not configured")
+            raise ValueError(f"{self.key_name} is not configured")
             
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            **self.extra_headers(),
         }
         
         payload = {
@@ -85,7 +95,7 @@ class OpenAIAdapter(BaseLLMAdapter):
             async with httpx.AsyncClient() as client:
                 async with client.stream(
                     "POST",
-                    "https://api.openai.com/v1/chat/completions",
+                    self.chat_url,
                     headers=headers,
                     json=payload,
                     timeout=30.0

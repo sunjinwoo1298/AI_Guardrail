@@ -140,14 +140,16 @@ def calculate_risk_score(text: str) -> Tuple[float, list, list]:
             span_ctx.__exit__(None, None, None)
 
 
-def should_block_prompt(risk_score: float, injection_detections: List[str]):
+def should_block_prompt(risk_score: float, injection_detections: List[str], max_risk_score: float = None):
+    """max_risk_score overrides MAX_RISK_SCORE for one app (APP_POLICIES)."""
+    threshold = MAX_RISK_SCORE if max_risk_score is None else max_risk_score
     if BLOCK_PROMPT_INJECTION and injection_detections:
         return True
 
     if risk_score >= MAX_BEHAVIOR_RISK_SCORE and injection_detections:
         return True
 
-    if BLOCK_HIGH_RISK_PROMPTS and risk_score >= MAX_RISK_SCORE:
+    if BLOCK_HIGH_RISK_PROMPTS and risk_score >= threshold:
         return True
 
     return False

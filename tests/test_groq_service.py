@@ -47,7 +47,7 @@ def test_generate_response_uses_live_model(monkeypatch):
     monkeypatch.setattr(groq_service, "search_semantic_cache", fake_none)
     monkeypatch.setattr(groq_service, "calculate_cost", lambda model, prompt_tokens, completion_tokens: 0.123)
 
-    async def fake_create_completion(messages, model, stream=False):
+    async def fake_create_completion(messages, model, stream=False, **_kwargs):
         return {
             "choices": [{"message": {"role": "assistant", "content": "live answer"}}],
             "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
@@ -80,7 +80,7 @@ def test_generate_response_falls_back_to_secondary_model(monkeypatch):
 
     calls = []
 
-    async def fake_create_completion(messages, model, stream=False):
+    async def fake_create_completion(messages, model, stream=False, **_kwargs):
         calls.append(model)
         if model == "groq/openai/gpt-oss-120b":
             raise TimeoutError("primary timed out")
@@ -113,7 +113,7 @@ def test_generate_response_degrades_when_all_models_fail(monkeypatch):
     monkeypatch.setattr(groq_service, "get_exact_cache", fake_none)
     monkeypatch.setattr(groq_service, "search_semantic_cache", fake_none)
 
-    async def fake_create_completion(messages, model, stream=False):
+    async def fake_create_completion(messages, model, stream=False, **_kwargs):
         raise TimeoutError("down")
 
     monkeypatch.setattr(groq_service, "_create_completion", fake_create_completion)
