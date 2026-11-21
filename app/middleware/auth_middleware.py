@@ -1,3 +1,5 @@
+import time
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -53,9 +55,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.reserved_tokens = estimated_tokens
             if not rate_limit.allowed:
                 logger.warning("Rate limit exceeded for path=%s reason=%s", request.url.path, rate_limit.reason)
+                # Limits use fixed 60s buckets, so the budget resets at the next minute boundary.
+                retry_after = max(1, int(60 - (time.time() % 60)) + 1)
                 return JSONResponse(
                     status_code=429,
+                    headers={"Retry-After": str(retry_after)},
                     content={
+                        "retry_after_seconds": retry_after,
                         "error": "Rate limit exceeded",
                         "reason": rate_limit.reason,
                         "rpm_used": rate_limit.rpm_used,

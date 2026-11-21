@@ -7,11 +7,15 @@ services:
     container_name: ai-guardrail-app
     env_file:
       - .env
+    environment:
+      # Persist the ChromaDB semantic cache across restarts.
+      - CHROMA_PERSIST_DIR=/home/app/data/chroma
     ports:
       - "8000:8000"
     volumes:
       - ./app:/app/app
       - hf_cache:/home/app/.cache/huggingface
+      - chroma_data:/home/app/data
     depends_on:
       - redis
       - otel-collector
@@ -69,6 +73,16 @@ services:
       - ./observability/otel/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
     command:
       - "--config=/etc/otelcol/config.yaml"
+    depends_on:
+      - jaeger
+
+  # Trace viewer: the collector forwards OTLP traces here. UI on http://localhost:16686
+  jaeger:
+    image: jaegertracing/jaeger:2.1.0
+    container_name: ai-guardrail-jaeger
+    ports:
+      - "16686:16686"
+    restart: unless-stopped
   frontend:
     build:
       context: ./frontend
@@ -84,3 +98,4 @@ volumes:
   grafana_data:
   redis_data:
   hf_cache:
+  chroma_data:

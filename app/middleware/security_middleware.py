@@ -4,7 +4,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.core.config import ENABLE_PII_MASKING
+from app.core.config import ENABLE_PII_MASKING, MAX_PROMPT_CHARS
 from app.core.logger import logger
 from app.core.request_id import generate_request_id
 from app.observability.tracing import trace
@@ -82,6 +82,17 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             else:
                 prompt = payload.get("prompt", "")
 
+            # Reject oversize prompts up front with a clear error. Previously they were
+            # scanned (slow on long text) and reported as "blocked by security policy".
+            if "messages" not in payload and isinstance(prompt, str) and len(prompt.strip()) > MAX_PROMPT_CHARS:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": f"Prompt too long: {len(prompt.strip())} characters (limit {MAX_PROMPT_CHARS})",
+                        "max_prompt_chars": MAX_PROMPT_CHARS,
+                    },
+                )
+
             risk_score, pii_detections, injection_detections = calculate_risk_score(prompt)
             if ENABLE_PII_MASKING:
                 try:
@@ -123,15 +134,15 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             else:
                 request.state.sanitized_messages = None
 
+            # Security events are counted once, in calculate_risk_score(); recording them
+            # here as well double-counted every detection in Prometheus.
             if pii_detections:
-                record_security_event("pii", "detected")
                 logger.warning(
                     "PII detected in prompt: %s",
                     ", ".join(sorted({item['type'] for item in pii_detections}))
                 )
 
             if injection_detections:
-                record_security_event("prompt_injection", "detected")
                 logger.warning(
                     "Prompt injection attempt detected: %s",
                     ", ".join(injection_detections)

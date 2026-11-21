@@ -49,8 +49,8 @@ export const PRESETS = [
 export const MODELS = [
   "groq/openai/gpt-oss-120b",
   "groq/openai/gpt-oss-20b",
-  "groq/llama-3.1-8b-instant",
+  "groq/qwen/qwen3.8-27b",
   "openai/gpt-4o-mini",
-  "gemini/gemini-1.5-flash",
-  "anthropic/claude-3-5-sonnet-20241022",
+  "gemini/gemini-2.5-flash",
+  "anthropic/claude-opus-5-5",
 ];

@@ -90,7 +90,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         }
         
         # Anthropic requires max_tokens
-        limit_tokens = max_tokens if max_tokens is not None else 1024
+        limit_tokens = max_tokens if max_tokens is not None else 16000  # current Claude models always think; 1024 could be spent before any answer text
         
         payload = {
             "model": model,
@@ -132,7 +132,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             "content-type": "application/json"
         }
         
-        limit_tokens = max_tokens if max_tokens is not None else 1024
+        limit_tokens = max_tokens if max_tokens is not None else 16000  # current Claude models always think; 1024 could be spent before any answer text
         
         payload = {
             "model": model,

@@ -21,6 +21,7 @@ MODEL_PRICING_PER_MILLION = {
     "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
     "gemini-1.5-pro": {"input": 1.25, "output": 5.00},
     "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
+    "claude-opus-5-5": {"input": 4.00, "output": 20.00},
 }
 
 PROVIDER_PREFIXES = ("groq/", "openai/", "gemini/", "anthropic/")

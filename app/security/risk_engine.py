@@ -131,7 +131,7 @@ def calculate_risk_score(text: str) -> Tuple[float, list, list]:
         record_security_risk(risk_score)
         if pii_detections:
             record_security_event("pii", "detected")
-        if injection_result.get("is_injection"):
+        if injection_result.get("is_injection") or injection_detections:
             record_security_event("prompt_injection", "detected")
 
         return risk_score, pii_detections, injection_detections

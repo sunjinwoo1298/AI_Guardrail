@@ -111,7 +111,7 @@ export function MetadataDetails({ data }) {
 
 /** Rate limit / auth / server errors. */
 export function ErrorSummary({ status, data }) {
-  const message = data.error || data.detail || "Request failed";
+  const message = data.error?.message || data.error || data.detail || "Request failed";
   const extra =
     status === 429
       ? `${data.reason || ""} (requests ${data.rpm_used}/${data.rpm_limit}, tokens ${data.tpm_used}/${data.tpm_limit})`

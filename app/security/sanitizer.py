@@ -2,7 +2,7 @@ import html
 import re
 from typing import Optional, List
 
-from app.core.config import SYSTEM_PROMPT_CANARY
+from app.core.config import ESCAPE_HTML_RESPONSES, SYSTEM_PROMPT_CANARY
 from app.security.pii_detector import PII_PATTERNS
 from app.security.prompt_guard import get_system_prompt_canary
 
@@ -96,14 +96,27 @@ def mask_pii(text: str, detections: Optional[List[dict]] = None) -> str:
 
 
 def sanitize_text(text: str, detections: Optional[List[dict]] = None) -> str:
+    """Mask PII in a prompt. No HTML escaping: the model must see code such as
+    ``a < b`` as written, and escaping here was the first of several layers that
+    produced output like ``&amp;lt;br&amp;gt;``."""
     if not text:
         return text
-    return html.escape(mask_pii(text, detections), quote=False)
+    return mask_pii(text, detections)
 
 
 def sanitize_response(text: str) -> str:
-    sanitized_text = sanitize_text(text)
+    """Mask PII and the system-prompt canary in model output.
+
+    HTML escaping is opt-in (ESCAPE_HTML_RESPONSES) for clients that inject responses
+    into HTML unescaped. It is idempotent, so text that was already escaped (for
+    example, read back from the cache) is never escaped twice.
+    """
+    if not text:
+        return text
+    sanitized_text = mask_pii(text)
     canary = get_system_prompt_canary() or SYSTEM_PROMPT_CANARY
     if canary and canary in sanitized_text:
         sanitized_text = sanitized_text.replace(canary, "[REDACTED_SYSTEM_PROMPT]")
+    if ESCAPE_HTML_RESPONSES:
+        sanitized_text = html.escape(html.unescape(sanitized_text), quote=False)
     return sanitized_text

@@ -42,6 +42,20 @@ BEHAVIOR_RISK_WINDOW_SECONDS = int(os.getenv("BEHAVIOR_RISK_WINDOW_SECONDS", "30
 BEHAVIOR_RISK_RATE_THRESHOLD = int(os.getenv("BEHAVIOR_RISK_RATE_THRESHOLD", "4"))
 RPM_LIMIT_PER_MINUTE = int(os.getenv("RPM_LIMIT_PER_MINUTE", "120"))
 TPM_LIMIT_PER_MINUTE = int(os.getenv("TPM_LIMIT_PER_MINUTE", "12000"))
+# Output hardening options.
+# HTML-escape responses (for clients that render them as raw HTML). Off by default:
+# JSON clients and the bundled console render text safely, and escaping corrupts code.
+ESCAPE_HTML_RESPONSES = os.getenv("ESCAPE_HTML_RESPONSES", "false").lower() == "true"
+# Return the model's chain-of-thought ("reasoning" fields). Off by default: it can
+# echo system-prompt content and is not PII-redacted by providers.
+EXPOSE_REASONING = os.getenv("EXPOSE_REASONING", "false").lower() == "true"
+# Characters of streamed output held back so PII/canary redaction can see a whole
+# sentence before it is sent.
+STREAM_REDACTION_HOLDBACK_CHARS = int(os.getenv("STREAM_REDACTION_HOLDBACK_CHARS", "64"))
+# Seconds clients should wait after a degraded (503) response.
+DEGRADED_RETRY_AFTER_SECONDS = int(os.getenv("DEGRADED_RETRY_AFTER_SECONDS", "30"))
+# Directory for a persistent semantic cache; empty keeps it in memory.
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "")
 # With masking on, the most PII alone may add to the risk score. Kept below
 # MAX_RISK_SCORE minus the max behaviour risk (0.35) so masked PII is never blocked alone.
 MASKED_PII_RISK_CAP = float(os.getenv("MASKED_PII_RISK_CAP", "0.4"))

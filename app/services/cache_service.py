@@ -25,6 +25,7 @@ from app.core.config import (
     CACHE_SIMILARITY_THRESHOLD,
     CACHE_TTL_SECONDS,
     CHROMA_COLLECTION_NAME,
+    CHROMA_PERSIST_DIR,
     EMBEDDING_MODEL_NAME,
     CHROMA_TIMEOUT_SECONDS,
     REDIS_URL,
@@ -103,7 +104,11 @@ def get_chroma_collection():
         if _collection is not None:
             return _collection
 
-        _chroma_client = chromadb.Client()
+        if CHROMA_PERSIST_DIR:
+            # Survives restarts (mount a volume here in Docker).
+            _chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+        else:
+            _chroma_client = chromadb.Client()
         _collection = _chroma_client.get_or_create_collection(
             name=CHROMA_COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
@@ -184,10 +189,16 @@ async def search_semantic_cache(prompt: str, model: str):
                 collection = get_chroma_collection()
                 query_embedding = generate_embedding(prompt)
 
+                # Honour CACHE_TTL_SECONDS like the Redis cache does. Semantic entries
+                # never expired before; with a persistent store that would serve stale
+                # answers forever.
                 results = collection.query(
                     query_embeddings=[query_embedding],
                     n_results=1,
-                    where={"cache_model": normalize_model(model)},
+                    where={"$and": [
+                        {"cache_model": normalize_model(model)},
+                        {"cached_at": {"$gte": time.time() - CACHE_TTL_SECONDS}},
+                    ]},
                     include=["documents", "metadatas", "distances"],
                 )
 

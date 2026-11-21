@@ -25,8 +25,18 @@ def test_partially_overlapping_detections_use_union_and_widest_label():
     assert mask_pii(text, detections) == "Remind me to call [PHONE] tomorrow."
 
 
-def test_sanitize_text_still_escapes_html():
-    assert sanitize_text("<b>hi</b>") == "&lt;b&gt;hi&lt;/b&gt;"
+def test_prompts_are_not_html_escaped():
+    assert sanitize_text("if a < b and c > d: <b>hi</b>") == "if a < b and c > d: <b>hi</b>"
+
+
+def test_response_escaping_is_off_by_default_and_idempotent(monkeypatch):
+    from app.security import sanitizer
+
+    assert sanitizer.sanitize_response("Use <br> here") == "Use <br> here"
+    monkeypatch.setattr(sanitizer, "ESCAPE_HTML_RESPONSES", True)
+    once = sanitizer.sanitize_response("Use <br> here")
+    assert once == "Use &lt;br&gt; here"
+    assert sanitizer.sanitize_response(once) == once  # e.g. a cached, already-escaped response
 
 
 def test_pii_only_prompt_is_masked_not_blocked(monkeypatch):

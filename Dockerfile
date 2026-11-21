@@ -33,8 +33,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Pre-create the model cache dir so a mounted volume inherits app ownership
 # (otherwise Docker creates it as root and model downloads fail with EACCES).
 RUN useradd --create-home --uid 1000 app \
- && mkdir -p /home/app/.cache/huggingface \
- && chown -R app:app /home/app/.cache
+ && mkdir -p /home/app/.cache/huggingface /home/app/data \
+ && chown -R app:app /home/app/.cache /home/app/data
 
 COPY --from=builder /opt/venv /opt/venv
 

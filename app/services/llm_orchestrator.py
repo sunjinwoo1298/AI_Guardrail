@@ -18,7 +18,59 @@ from app.core.config import (
     MAX_RESPONSE_CHARS,
     SECONDARY_MODEL_NAME,
     DEFAULT_PROVIDER,
+    EXPOSE_REASONING,
+    STREAM_REDACTION_HOLDBACK_CHARS,
 )
+
+_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details")
+
+
+def _scrub_reasoning(message: Optional[dict]) -> None:
+    """Drop (or, if EXPOSE_REASONING, redact) provider chain-of-thought fields in
+    place. They bypassed response redaction and can echo system-prompt content."""
+    if not isinstance(message, dict):
+        return
+    for key in _REASONING_KEYS:
+        if key not in message:
+            continue
+        if EXPOSE_REASONING and isinstance(message[key], str):
+            message[key] = sanitize_response(message[key])
+        else:
+            message.pop(key)
+
+
+class _StreamRedactor:
+    """Redacts streamed text before it reaches the client.
+
+    Chunks are buffered and released only up to a sentence or line boundary that is
+    at least ``holdback`` characters from the end, so an email, key, phone number or
+    the canary split across chunks is still seen whole by the redactor.
+    """
+
+    _BOUNDARIES = ("\n", ". ", "! ", "? ")
+
+    def __init__(self, holdback: int = STREAM_REDACTION_HOLDBACK_CHARS):
+        self.holdback = max(0, holdback)
+        self.buffer = ""
+
+    def feed(self, text: str) -> str:
+        self.buffer += text
+        limit = len(self.buffer) - self.holdback
+        if limit <= 0:
+            return ""
+        cut = -1
+        for boundary in self._BOUNDARIES:
+            pos = self.buffer.rfind(boundary, 0, limit)
+            if pos != -1:
+                cut = max(cut, pos + len(boundary))
+        if cut <= 0:
+            return ""
+        ready, self.buffer = self.buffer[:cut], self.buffer[cut:]
+        return sanitize_response(ready)
+
+    def flush(self) -> str:
+        ready, self.buffer = self.buffer, ""
+        return sanitize_response(ready) if ready else ""
 from app.core.cost_calculator import calculate_cost, is_priced
 from app.core.tokens import estimate_messages_tokens, estimate_text_tokens
 from app.core.logger import logger
@@ -260,7 +312,7 @@ async def generate_response(
 
                 api_key = _api_key_from_context(security_metadata)
                 if api_key:
-                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), total_tokens)
+                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), 0)  # cache hit: no upstream tokens used
 
                 openai_response = {
                     "id": f"chatcmpl-cache-{uuid_id()}",
@@ -344,7 +396,7 @@ async def generate_response(
 
                 api_key = _api_key_from_context(security_metadata)
                 if api_key:
-                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), total_tokens)
+                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), 0)  # cache hit: no upstream tokens used
 
                 openai_response = {
                     "id": f"chatcmpl-cache-{uuid_id()}",
@@ -475,6 +527,8 @@ async def generate_response(
 
         # Update content in original completion response
         chat_completion["choices"][0]["message"]["content"] = response_text
+        for choice in chat_completion.get("choices", []):
+            _scrub_reasoning(choice.get("message"))
 
         metadata_payload = _build_metadata_payload(
             request_id=request_id,
@@ -550,7 +604,7 @@ async def stream_response(
 
                 api_key = _api_key_from_context(security_metadata)
                 if api_key:
-                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), total_tokens)
+                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), 0)  # cache hit: no upstream tokens used
 
                 chunk_id = f"chatcmpl-cache-{uuid_id()}"
                 yield "content", {
@@ -630,7 +684,7 @@ async def stream_response(
 
                 api_key = _api_key_from_context(security_metadata)
                 if api_key:
-                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), total_tokens)
+                    settle_tokens(api_key, _reserved_tokens_from_context(security_metadata), 0)  # cache hit: no upstream tokens used
 
                 chunk_id = f"chatcmpl-cache-{uuid_id()}"
                 yield "content", {
@@ -711,20 +765,48 @@ async def stream_response(
 
         full_response = ""
         provider_usage = None
+        # Streamed text used to reach the client raw; only the cached copy was redacted.
+        redactor = _StreamRedactor()
+        emitted_chars = 0
+        last_chunk: Optional[dict] = None
+
+        def _redacted_chunk(template: dict, text: str) -> dict:
+            out = {k: v for k, v in template.items() if k not in ("usage", "x_groq")}
+            choice = dict((template.get("choices") or [{}])[0])
+            delta = {k: v for k, v in (choice.get("delta") or {}).items() if k not in _REASONING_KEYS}
+            delta["content"] = text
+            choice["delta"] = delta
+            choice.setdefault("index", 0)
+            out["choices"] = [choice]
+            return out
+
+        def _within_limit(text: str) -> str:
+            nonlocal emitted_chars
+            room = max(0, MAX_RESPONSE_CHARS - emitted_chars)
+            text = text[:room]
+            emitted_chars += len(text)
+            return text
 
         async for chunk in stream:
             choices = chunk.get("choices", [])
             if choices:
+                last_chunk = chunk
                 delta = choices[0].get("delta", {})
                 content = delta.get("content", "")
                 if content:
                     full_response += content
-                    yield "content", chunk
+                    ready = _within_limit(redactor.feed(content))
+                    if ready:
+                        yield "content", _redacted_chunk(chunk, ready)
 
             # Providers report real usage in a final chunk (Groq may nest it under x_groq).
             chunk_usage = chunk.get("usage") or (chunk.get("x_groq") or {}).get("usage")
             if chunk_usage:
                 provider_usage = chunk_usage
+
+        tail = _within_limit(redactor.flush())
+        if tail:
+            yield "content", _redacted_chunk(last_chunk or {"object": "chat.completion.chunk", "model": used_model}, tail)
 
         latency = time.time() - start_time
 
