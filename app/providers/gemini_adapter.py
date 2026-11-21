@@ -152,12 +152,15 @@ class GeminiAdapter(BaseLLMAdapter):
         if generation_config:
             payload["generationConfig"] = generation_config
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-        
+        # The key goes in a header, never the URL: httpx logs request URLs and
+        # raise_for_status() errors include them, which leaked the key into logs.
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url,
                 json=payload,
+                headers={"x-goog-api-key": self.api_key},
                 timeout=30.0
             )
             response.raise_for_status()
@@ -190,7 +193,7 @@ class GeminiAdapter(BaseLLMAdapter):
         if generation_config:
             payload["generationConfig"] = generation_config
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={self.api_key}&alt=sse"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
 
         async def _stream_generator():
             chunk_id = f"chatcmpl-{uuid.uuid4()}"
@@ -200,6 +203,7 @@ class GeminiAdapter(BaseLLMAdapter):
                     "POST",
                     url,
                     json=payload,
+                    headers={"x-goog-api-key": self.api_key},
                     timeout=30.0
                 ) as response:
                     response.raise_for_status()

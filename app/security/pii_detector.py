@@ -2,6 +2,7 @@ import re
 import unicodedata
 from typing import List
 
+from app.core.config import PII_ENTITIES
 from app.core.logger import logger
 
 PII_PATTERNS = {
@@ -86,7 +87,10 @@ def detect_pii(text: str):
         return regex_detections
 
     try:
-        results = analyzer.analyze(text=normalized, language="en")
+        results = [
+            r for r in analyzer.analyze(text=normalized, language="en")
+            if r.entity_type in PII_ENTITIES
+        ]
         presidio_detections = [
             {
                 "type": result.entity_type,

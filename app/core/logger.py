@@ -33,4 +33,9 @@ root_logger.setLevel(logging.INFO)
 root_logger.handlers = [handler]
 root_logger.addFilter(RequestContextFilter())
 
+# httpx/httpcore log every request URL at INFO. Keep them at WARNING so a provider
+# that puts credentials in a URL can never write them to the logs.
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 logger = logging.getLogger("ai_guardrail_proxy")

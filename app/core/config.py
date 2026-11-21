@@ -42,6 +42,21 @@ BEHAVIOR_RISK_WINDOW_SECONDS = int(os.getenv("BEHAVIOR_RISK_WINDOW_SECONDS", "30
 BEHAVIOR_RISK_RATE_THRESHOLD = int(os.getenv("BEHAVIOR_RISK_RATE_THRESHOLD", "4"))
 RPM_LIMIT_PER_MINUTE = int(os.getenv("RPM_LIMIT_PER_MINUTE", "120"))
 TPM_LIMIT_PER_MINUTE = int(os.getenv("TPM_LIMIT_PER_MINUTE", "12000"))
+# With masking on, the most PII alone may add to the risk score. Kept below
+# MAX_RISK_SCORE minus the max behaviour risk (0.35) so masked PII is never blocked alone.
+MASKED_PII_RISK_CAP = float(os.getenv("MASKED_PII_RISK_CAP", "0.4"))
+# Presidio entity types treated as PII. Context-dependent types (PERSON, LOCATION,
+# DATE_TIME, NRP, URL) are off by default: the small spaCy model flags ordinary words
+# ("France", "tomorrow") and masking them breaks normal prompts. Add them here to enable.
+PII_ENTITIES = frozenset(
+    e.strip().upper()
+    for e in os.getenv(
+        "PII_ENTITIES",
+        "EMAIL_ADDRESS,PHONE_NUMBER,CREDIT_CARD,US_SSN,IP_ADDRESS,IBAN_CODE,US_BANK_NUMBER,"
+        "US_PASSPORT,US_DRIVER_LICENSE,US_ITIN,CRYPTO,MEDICAL_LICENSE,IN_AADHAAR,IN_PAN",
+    ).split(",")
+    if e.strip()
+)
 
 
 def validate_settings():
@@ -100,6 +115,9 @@ def validate_settings():
         errors.append("RPM_LIMIT_PER_MINUTE must be positive")
     if TPM_LIMIT_PER_MINUTE <= 0:
         errors.append("TPM_LIMIT_PER_MINUTE must be positive")
+
+    if not 0.0 <= MASKED_PII_RISK_CAP <= 1.0:
+        errors.append("MASKED_PII_RISK_CAP must be between 0.0 and 1.0")
 
     if REQUIRE_API_KEY and not API_KEYS:
         errors.append("API_KEYS must contain at least one key when REQUIRE_API_KEY=true")

@@ -2,7 +2,7 @@ import html
 import re
 import threading
 import unicodedata
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from app.core.config import PROMPT_INJECTION_MODEL_NAME, SYSTEM_PROMPT_CANARY
 from app.core.logger import logger
@@ -77,10 +77,14 @@ def _get_classifier():
     return _classifier
 
 
-def score_prompt_injection(text: str) -> Dict[str, object]:
+def score_prompt_injection(text: str, classifier_text: Optional[str] = None) -> Dict[str, object]:
+    """Tripwires always run on the original prompt. The ML classifier can be given a
+    PII-masked copy (``classifier_text``) so that shared secrets don't read as
+    injection attempts; the rest of the prompt is classified unchanged."""
     normalized = normalize_text(text)
     tripwire_matches = fast_tripwire(normalized)
     classifier = _get_classifier()
+    classifier_input = normalize_text(classifier_text) if classifier_text is not None else normalized
 
     if classifier is None:
         return {
@@ -91,7 +95,7 @@ def score_prompt_injection(text: str) -> Dict[str, object]:
         }
 
     try:
-        raw_output = classifier(normalized)
+        raw_output = classifier(classifier_input)
         if isinstance(raw_output, list) and raw_output and isinstance(raw_output[0], list):
             raw_output = raw_output[0]
 
@@ -108,8 +112,12 @@ def score_prompt_injection(text: str) -> Dict[str, object]:
 
         label = str(result.get("label", "")).upper()
         score = float(result.get("score", 0.0))
-        is_injection = label in {"INJECTION", "LABEL_1", "YES"}
-        confidence = score if is_injection else 1.0 - score
+        # `confidence` is the probability that the prompt is an injection. The INJECTION
+        # entry is always selected above, so the label alone is not a verdict: it used to
+        # flag every prompt (even at 0.2%) as an injection and inflate the metrics.
+        is_injection_label = label in {"INJECTION", "LABEL_1", "YES"}
+        confidence = score if is_injection_label else 1.0 - score
+        is_injection = confidence >= 0.5
         if tripwire_matches and not is_injection:
             confidence = min(1.0, confidence + 0.15)
             is_injection = confidence >= 0.5

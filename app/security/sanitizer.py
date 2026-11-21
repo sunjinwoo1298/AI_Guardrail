@@ -48,30 +48,57 @@ def public_security_metadata(security_context: Optional[dict]) -> dict:
     return result
 
 
-def sanitize_text(text: str, detections: Optional[List[dict]] = None) -> str:
+def _merge_overlapping(detections: List[dict], text_length: int) -> List[dict]:
+    """Collapse overlapping spans into one span covering their union.
+
+    Presidio often reports nested entities (an EMAIL_ADDRESS plus the URL inside it,
+    a PHONE_NUMBER plus a DATE_TIME). Replacing those one by one shifted the offsets
+    of the outer span and produced corrupted text such as "[URL]]he meeting".
+    The label of the widest (then highest-scoring) span in each cluster wins.
+    """
+    spans = []
+    for det in detections:
+        start, end = det.get("start"), det.get("end")
+        if isinstance(start, int) and isinstance(end, int) and 0 <= start < end <= text_length:
+            spans.append(det)
+    spans.sort(key=lambda d: (d["start"], -d["end"]))
+
+    merged: List[dict] = []
+    for det in spans:
+        if merged and det["start"] < merged[-1]["end"]:
+            current = merged[-1]
+            if (det["end"] - det["start"], det.get("score", 0)) > (current["_width"], current.get("score", 0)):
+                current["type"], current["score"], current["_width"] = det.get("type", ""), det.get("score", 0), det["end"] - det["start"]
+            current["end"] = max(current["end"], det["end"])
+        else:
+            merged.append({"start": det["start"], "end": det["end"], "type": det.get("type", ""),
+                           "score": det.get("score", 0), "_width": det["end"] - det["start"]})
+    return merged
+
+
+def mask_pii(text: str, detections: Optional[List[dict]] = None) -> str:
+    """Replace detected PII with labels such as [EMAIL]. No HTML escaping."""
     if not text:
         return text
 
-    sanitized_text = text
-
-    # 1. If detections are provided, redact detected spans from end to start
+    masked = text
+    # 1. Replace detected spans right-to-left so earlier offsets stay valid.
     if detections:
-        sorted_detections = sorted(detections, key=lambda x: x.get("start", 0), reverse=True)
-        for det in sorted_detections:
-            start = det.get("start")
-            end = det.get("end")
-            entity_type = det.get("type", "")
-            replacement = LABEL_MAP.get(entity_type, f"[{entity_type}]")
-            if start is not None and end is not None and start < end and end <= len(sanitized_text):
-                sanitized_text = sanitized_text[:start] + replacement + sanitized_text[end:]
+        for det in reversed(_merge_overlapping(detections, len(masked))):
+            replacement = LABEL_MAP.get(det["type"], f"[{det['type']}]")
+            masked = masked[:det["start"]] + replacement + masked[det["end"]:]
 
-    # 2. Run regex patterns for any remaining unmasked items
+    # 2. Regex pass for anything the detectors missed.
     for pii_type, pattern in PII_PATTERNS.items():
         replacement = LABEL_MAP.get(pii_type, f"[{pii_type}]")
-        sanitized_text = re.sub(pattern, replacement, sanitized_text, flags=re.IGNORECASE)
+        masked = re.sub(pattern, replacement, masked, flags=re.IGNORECASE)
+    return masked
 
-    sanitized_text = html.escape(sanitized_text, quote=False)
-    return sanitized_text
+
+def sanitize_text(text: str, detections: Optional[List[dict]] = None) -> str:
+    if not text:
+        return text
+    return html.escape(mask_pii(text, detections), quote=False)
 
 
 def sanitize_response(text: str) -> str:

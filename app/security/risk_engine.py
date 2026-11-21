@@ -1,4 +1,5 @@
 import hashlib
+import re
 from typing import List, Tuple
 
 from app.core.config import (
@@ -8,6 +9,8 @@ from app.core.config import (
     BEHAVIOR_RISK_WINDOW_SECONDS,
     BLOCK_HIGH_RISK_PROMPTS,
     BLOCK_PROMPT_INJECTION,
+    ENABLE_PII_MASKING,
+    MASKED_PII_RISK_CAP,
     MAX_BEHAVIOR_RISK_SCORE,
     MAX_RISK_SCORE,
 )
@@ -17,6 +20,23 @@ from app.observability.metrics import record_security_event, record_security_ris
 from app.observability.tracing import trace
 from app.security.pii_detector import PII_WEIGHTS, detect_pii
 from app.security.prompt_guard import score_prompt_injection
+from app.security.sanitizer import mask_pii
+
+# "my api key is [API_KEY]", "secret token: [API_KEY]", bare "[API_KEY]".
+# The injection classifier scores any mention of sharing a key as an attack
+# (~1.0 even after masking), so the classifier sees the prompt without that phrase.
+# Only this fixed phrase is removed; the rest of the prompt is classified as-is.
+_CREDENTIAL_PHRASE = re.compile(
+    r"(?:\b(?:my|the|a|an|our|your|this|secret|api|access|private|auth)\s+)*"
+    r"\b(?:key|token|secret|password|credential)s?\s*(?:is|was|=|:)?\s*\[API_KEY\]"
+    r"|\[API_KEY\]",
+    re.IGNORECASE,
+)
+
+
+def _classifier_view(text: str, pii_detections: list) -> str:
+    masked = mask_pii(text, pii_detections)
+    return re.sub(r"[ \t]{2,}", " ", _CREDENTIAL_PHRASE.sub("", masked))
 try:
     import redis
 except ImportError:  # pragma: no cover
@@ -67,16 +87,30 @@ def calculate_risk_score(text: str) -> Tuple[float, list, list]:
     span = span_ctx.__enter__() if span_ctx else None
     try:
         pii_detections = detect_pii(text)
-        injection_result = score_prompt_injection(text)
+        injection_result = score_prompt_injection(
+            text, classifier_text=_classifier_view(text, pii_detections) if pii_detections else None
+        )
         injection_detections = injection_result.get("signals", [])
 
-        risk_score = 0.0
+        pii_risk = 0.0
         pii_types = set()
 
         for detection in pii_detections:
             pii_type = detection["type"]
             pii_types.add(pii_type)
-            risk_score += float(PII_WEIGHTS.get(pii_type, 0.20))
+            pii_risk += float(PII_WEIGHTS.get(pii_type, 0.20))
+
+        if not ALLOW_EMAILS and pii_types & {"EMAIL", "EMAIL_ADDRESS"}:
+            pii_risk += 0.05
+        if not ALLOW_PHONE_NUMBERS and pii_types & {"PHONE", "PHONE_NUMBER"}:
+            pii_risk += 0.05
+
+        # When masking is on, PII never reaches the model, so PII alone must not push a
+        # prompt over the block threshold; it still adds to injection/behaviour risk.
+        if ENABLE_PII_MASKING:
+            pii_risk = min(pii_risk, MASKED_PII_RISK_CAP)
+
+        risk_score = pii_risk
 
         injection_confidence = float(injection_result.get("confidence", 0.0))
         if injection_result.get("is_injection"):
@@ -84,11 +118,6 @@ def calculate_risk_score(text: str) -> Tuple[float, list, list]:
 
         behavior_risk, behavior_meta = _behavior_risk(text)
         risk_score += behavior_risk
-
-        if not ALLOW_EMAILS and "EMAIL" in pii_types:
-            risk_score += 0.05
-        if not ALLOW_PHONE_NUMBERS and "PHONE" in pii_types:
-            risk_score += 0.05
 
         risk_score = min(risk_score, 1.0)
 
