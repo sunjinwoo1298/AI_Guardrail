@@ -195,11 +195,12 @@ docker compose -f docker-compose.observability.yml up -d --build
 ```
 
 This starts:
-- the FastAPI app
-- Redis
-- Prometheus
-- Grafana
-- OpenTelemetry Collector
+- the FastAPI app (Port 8000)
+- the React console (Port 5173)
+- Redis (Port 6379)
+- Prometheus (Port 9090)
+- Grafana (Port 3000)
+- OpenTelemetry Collector (Port 4317/4318)
 
 ### 4. Verify the services
 
@@ -210,13 +211,17 @@ curl http://127.0.0.1:8000/ready
 curl http://127.0.0.1:8000/metrics
 ```
 
-### 5. Run the automated test suite
+### 5. Open the web console
+
+Browse to [http://localhost:5173](http://localhost:5173). To develop it locally, see [frontend/README.md](frontend/README.md).
+
+### 6. Run the automated test suite
 
 ```bash
 python -m pytest -q
 ```
 
-### 6. Run the load test
+### 7. Run the load test
 
 ```bash
 locust -f load_test/locustfile.py --headless -u 20 -r 5 -t 5m --host http://127.0.0.1:8000 --csv load_test/results
@@ -227,8 +232,9 @@ This writes:
 - `load_test/results_stats_history.csv`
 - `load_test/results_failures.csv`
 
-### 7. Open dashboards
+### 8. Open observability dashboards
 
+- Web console: http://localhost:5173
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000
 

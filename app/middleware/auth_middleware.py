@@ -14,7 +14,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path in {"/health", "/ready", "/metrics", "/"}:
             return await call_next(request)
 
-        if request.url.path.startswith(("/generate", "/stream")) and REQUIRE_API_KEY:
+        if request.url.path.startswith(("/generate", "/stream", "/v1/chat/completions")) and REQUIRE_API_KEY:
             provided_key = request.headers.get("x-api-key", "").strip()
             if not provided_key or provided_key not in API_KEYS:
                 logger.warning("Unauthorized request rejected for path=%s", request.url.path)
@@ -25,14 +25,32 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             request.state.api_key = provided_key
             estimated_tokens = 0
-            if request.url.path.startswith(("/generate", "/stream")):
+            if request.url.path.startswith(("/generate", "/stream", "/v1/chat/completions")):
                 try:
                     body = await request.body()
+                    async def receive():
+                        return {"type": "http.request", "body": body, "more_body": False}
+                    request._receive = receive
                     if body:
                         import json
                         payload = json.loads(body.decode("utf-8"))
-                        prompt = str(payload.get("prompt", ""))
-                        estimated_tokens = max(1, len(prompt) // 4)
+                        request.state.raw_payload = payload
+                        if "messages" in payload:
+                            messages = payload.get("messages", [])
+                            text_to_estimate = ""
+                            for msg in messages:
+                                if isinstance(msg, dict) and msg.get("role") == "user":
+                                    content = msg.get("content")
+                                    if isinstance(content, str):
+                                        text_to_estimate += content
+                                    elif isinstance(content, list):
+                                        for part in content:
+                                            if isinstance(part, dict) and part.get("type") == "text":
+                                                text_to_estimate += part.get("text", "")
+                            estimated_tokens = max(1, len(text_to_estimate) // 4)
+                        else:
+                            prompt = str(payload.get("prompt", ""))
+                            estimated_tokens = max(1, len(prompt) // 4)
                 except Exception:
                     estimated_tokens = 1
 

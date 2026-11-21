@@ -4,6 +4,10 @@ import os
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "groq").lower()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "semantic_cache")
 CACHE_SIMILARITY_THRESHOLD = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.15"))
@@ -27,7 +31,7 @@ GROQ_RETRY_ATTEMPTS = int(os.getenv("GROQ_RETRY_ATTEMPTS", "2"))
 GROQ_RETRY_BASE_DELAY_SECONDS = float(os.getenv("GROQ_RETRY_BASE_DELAY_SECONDS", "0.25"))
 GROQ_CIRCUIT_BREAKER_FAILURE_THRESHOLD = int(os.getenv("GROQ_CIRCUIT_BREAKER_FAILURE_THRESHOLD", "3"))
 GROQ_CIRCUIT_BREAKER_RESET_SECONDS = float(os.getenv("GROQ_CIRCUIT_BREAKER_RESET_SECONDS", "30"))
-SECONDARY_MODEL_NAME = os.getenv("SECONDARY_MODEL_NAME", "llama-3.1-8b-instant")
+SECONDARY_MODEL_NAME = os.getenv("SECONDARY_MODEL_NAME", "openai/gpt-oss-20b")
 PROMPT_INJECTION_MODEL_NAME = os.getenv(
     "PROMPT_INJECTION_MODEL_NAME",
     "protectai/deberta-v3-base-prompt-injection-v2",
@@ -43,8 +47,17 @@ TPM_LIMIT_PER_MINUTE = int(os.getenv("TPM_LIMIT_PER_MINUTE", "12000"))
 def validate_settings():
     errors = []
 
-    if not GROQ_API_KEY:
-        errors.append("GROQ_API_KEY is required")
+    if DEFAULT_PROVIDER not in {"groq", "openai", "gemini", "anthropic"}:
+        errors.append(f"DEFAULT_PROVIDER must be one of: groq, openai, gemini, anthropic")
+
+    if DEFAULT_PROVIDER == "groq" and not GROQ_API_KEY:
+        errors.append("GROQ_API_KEY is required when DEFAULT_PROVIDER=groq")
+    elif DEFAULT_PROVIDER == "openai" and not OPENAI_API_KEY:
+        errors.append("OPENAI_API_KEY is required when DEFAULT_PROVIDER=openai")
+    elif DEFAULT_PROVIDER == "gemini" and not GEMINI_API_KEY:
+        errors.append("GEMINI_API_KEY is required when DEFAULT_PROVIDER=gemini")
+    elif DEFAULT_PROVIDER == "anthropic" and not ANTHROPIC_API_KEY:
+        errors.append("ANTHROPIC_API_KEY is required when DEFAULT_PROVIDER=anthropic")
 
     if not 0.0 <= CACHE_SIMILARITY_THRESHOLD <= 1.0:
         errors.append("CACHE_SIMILARITY_THRESHOLD must be between 0.0 and 1.0")

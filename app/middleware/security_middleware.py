@@ -18,35 +18,94 @@ from app.security.risk_engine import calculate_risk_score, should_block_prompt
 from app.security.sanitizer import sanitize_text
 
 
+def sanitize_messages(messages: list[dict]) -> list[dict]:
+    if not ENABLE_PII_MASKING:
+        return messages
+    sanitized = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            sanitized.append(msg)
+            continue
+        new_msg = dict(msg)
+        content = msg.get("content")
+        if isinstance(content, str):
+            new_msg["content"] = sanitize_text(content)
+        elif isinstance(content, list):
+            new_content = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    new_part = dict(part)
+                    new_part["text"] = sanitize_text(part.get("text", ""))
+                    new_content.append(new_part)
+                else:
+                    new_content.append(part)
+            new_msg["content"] = new_content
+        sanitized.append(new_msg)
+    return sanitized
+
+
 class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request.state.request_id = getattr(request.state, "request_id", None) or request.headers.get("x-request-id") or generate_request_id()
         if request.method not in {"POST", "PUT", "PATCH"}:
             return await call_next(request)
 
-        if not request.url.path.startswith(("/generate", "/stream")):
+        if not request.url.path.startswith(("/generate", "/stream", "/v1/chat/completions")):
             return await call_next(request)
 
         try:
-            body = await request.body()
-            if not body:
-                return await call_next(request)
+            payload = getattr(request.state, "raw_payload", None)
+            if payload is None:
+                body = await request.body()
+                if not body:
+                    return await call_next(request)
+                async def receive():
+                    return {"type": "http.request", "body": body, "more_body": False}
+                request._receive = receive
+                payload = json.loads(body.decode("utf-8"))
+            else:
+                body = await request.body()
+                async def receive():
+                    return {"type": "http.request", "body": body, "more_body": False}
+                request._receive = receive
+            
+            # Extract prompt from messages array or prompt field
+            if "messages" in payload:
+                messages = payload.get("messages", [])
+                user_contents = []
+                for msg in messages:
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        content = msg.get("content")
+                        if isinstance(content, str):
+                            user_contents.append(content)
+                        elif isinstance(content, list):
+                            for part in content:
+                                if isinstance(part, dict) and part.get("type") == "text":
+                                    user_contents.append(part.get("text", ""))
+                prompt = "\n".join(user_contents)
+            else:
+                prompt = payload.get("prompt", "")
 
-            payload = json.loads(body.decode("utf-8"))
-            prompt = payload.get("prompt", "")
+            risk_score, pii_detections, injection_detections = calculate_risk_score(prompt)
+            if ENABLE_PII_MASKING:
+                try:
+                    sanitized_prompt = sanitize_text(prompt, detections=pii_detections)
+                except TypeError:
+                    sanitized_prompt = sanitize_text(prompt)
+            else:
+                sanitized_prompt = prompt
+            blocked = should_block_prompt(risk_score, injection_detections)
+
             tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
             if tracer:
-                with tracer.start_as_current_span("middleware.security") as span:
-                    risk_score, pii_detections, injection_detections = calculate_risk_score(prompt)
-                    sanitized_prompt = sanitize_text(prompt) if ENABLE_PII_MASKING else prompt
-                    blocked = should_block_prompt(risk_score, injection_detections)
-                    span.set_attribute("risk_score", risk_score)
-                    span.set_attribute("pii_detected", bool(pii_detections))
-                    span.set_attribute("prompt_injection_detected", bool(injection_detections))
-            else:
-                risk_score, pii_detections, injection_detections = calculate_risk_score(prompt)
-                sanitized_prompt = sanitize_text(prompt) if ENABLE_PII_MASKING else prompt
-                blocked = should_block_prompt(risk_score, injection_detections)
+                try:
+                    with tracer.start_as_current_span("middleware.security") as span:
+                        if span and hasattr(span, "set_attribute"):
+                            span.set_attribute("risk_score", risk_score)
+                            span.set_attribute("pii_detected", bool(pii_detections))
+                            span.set_attribute("prompt_injection_detected", bool(injection_detections))
+                except Exception:
+                    pass
             record_security_risk(risk_score)
 
             security_context = {
@@ -61,6 +120,12 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 "blocked": blocked,
             }
             request.state.security_context = security_context
+            
+            # Save sanitized messages if messages exists
+            if "messages" in payload:
+                request.state.sanitized_messages = sanitize_messages(payload.get("messages", []))
+            else:
+                request.state.sanitized_messages = None
 
             if pii_detections:
                 record_security_event("pii", "detected")

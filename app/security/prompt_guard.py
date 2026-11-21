@@ -91,7 +91,21 @@ def score_prompt_injection(text: str) -> Dict[str, object]:
         }
 
     try:
-        result = classifier(normalized)[0]
+        raw_output = classifier(normalized)
+        if isinstance(raw_output, list) and raw_output and isinstance(raw_output[0], list):
+            raw_output = raw_output[0]
+
+        if isinstance(raw_output, list) and raw_output:
+            injection_dict = next(
+                (d for d in raw_output if isinstance(d, dict) and str(d.get("label", "")).upper() in {"INJECTION", "LABEL_1", "YES"}),
+                None
+            )
+            result = injection_dict if injection_dict else (raw_output[0] if isinstance(raw_output[0], dict) else {})
+        elif isinstance(raw_output, dict):
+            result = raw_output
+        else:
+            result = {}
+
         label = str(result.get("label", "")).upper()
         score = float(result.get("score", 0.0))
         is_injection = label in {"INJECTION", "LABEL_1", "YES"}

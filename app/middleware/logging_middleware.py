@@ -10,6 +10,8 @@ def normalize_endpoint(path: str) -> str:
         return "/generate"
     if path.startswith("/stream"):
         return "/stream"
+    if path.startswith("/v1/chat/completions"):
+        return "/v1/chat/completions"
     if path.startswith("/metrics"):
         return "/metrics"
     return path or "unknown"

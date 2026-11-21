@@ -74,7 +74,7 @@ def calculate_risk_score(text: str) -> Tuple[float, list, list]:
         for detection in pii_detections:
             pii_type = detection["type"]
             pii_types.add(pii_type)
-            risk_score += float(detection.get("score", PII_WEIGHTS.get(pii_type, 0.0)))
+            risk_score += float(PII_WEIGHTS.get(pii_type, 0.20))
 
         injection_confidence = float(injection_result.get("confidence", 0.0))
         if injection_result.get("is_injection"):

@@ -1,6 +1,6 @@
 import asyncio
 
-from app.services import resilient_groq_service as groq_service
+from app.services import llm_orchestrator as groq_service
 
 
 def test_generate_response_degrades_when_all_cache_and_model_paths_fail(monkeypatch):
@@ -15,7 +15,7 @@ def test_generate_response_degrades_when_all_cache_and_model_paths_fail(monkeypa
     monkeypatch.setattr(groq_service, "_create_completion", fake_fail)
     monkeypatch.setattr(groq_service, "record_model_observation", lambda **kwargs: None)
 
-    result = asyncio.run(groq_service.generate_response("hello"))
+    openai_response, result = asyncio.run(groq_service.generate_response("hello"))
 
     assert result["status"] == "degraded"
     assert result["reason"] == "model_unavailable"
@@ -35,7 +35,7 @@ def test_stream_response_degrades_when_all_models_fail(monkeypatch):
     monkeypatch.setattr(groq_service, "record_stream_duration", lambda **kwargs: None)
 
     chunks = list(asyncio.run(_collect_stream(groq_service.stream_response("hello"))))
-    assert any("__meta" in chunk for chunk in chunks)
+    assert any(item[0] == "metadata" for item in chunks)
 
 
 async def _collect_stream(generator):

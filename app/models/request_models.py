@@ -1,4 +1,5 @@
 from pydantic import BaseModel, validator
+from typing import Optional, List, Dict, Any
 
 from app.core.config import MAX_PROMPT_CHARS
 
@@ -13,5 +14,26 @@ class PromptRequest(BaseModel):
         if len(normalized) > MAX_PROMPT_CHARS:
             raise ValueError(f"prompt must not exceed {MAX_PROMPT_CHARS} characters")
         return normalized
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[Dict[str, Any]]
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    stream: Optional[bool] = False
+
+    @validator("messages")
+    def validate_messages(cls, value):
+        if not value:
+            raise ValueError("messages must not be empty")
+        return value
+
+    @validator("model")
+    def validate_model(cls, value):
+        if not value.strip():
+            raise ValueError("model must not be empty")
+        return value.strip()
+
 
     

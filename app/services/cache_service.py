@@ -33,6 +33,7 @@ from app.core.config import (
 from app.core.logger import logger
 from app.observability.metrics import record_cache_lookup, record_cache_write
 from app.observability.tracing import trace
+from app.security.sanitizer import public_security_metadata
 
 _redis_client = None
 _chroma_client = None
@@ -236,7 +237,7 @@ async def cache_response(
         "source_prompt": source_prompt,
         "similarity_distance": similarity_distance,
         "cached_at": time.time(),
-        "security_metadata": security_metadata,
+        "security_metadata": public_security_metadata(security_metadata),
     }
 
     redis_client = get_redis_client()

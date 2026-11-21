@@ -14,11 +14,10 @@ os.environ.setdefault("SECONDARY_MODEL_NAME", "fallback-model")
 
 @pytest.fixture(autouse=True)
 def _reset_service_state():
-    import app.services.resilient_groq_service as groq_service
+    import app.services.llm_orchestrator as groq_service
     from app.core.resilience import CircuitBreaker
 
-    groq_service.client = None
-    groq_service.SECONDARY_MODEL = os.environ["SECONDARY_MODEL_NAME"]
-    groq_service.BREAKERS[groq_service.MODEL_NAME] = CircuitBreaker(3, 30)
-    groq_service.BREAKERS[groq_service.SECONDARY_MODEL] = CircuitBreaker(3, 30)
+    groq_service._breakers.clear()
+    groq_service._breakers["groq/llama-3.1-8b-instant"] = CircuitBreaker(3, 30)
+    groq_service._breakers[os.environ["SECONDARY_MODEL_NAME"]] = CircuitBreaker(3, 30)
     yield

@@ -11,7 +11,7 @@ def test_generate_requires_api_key():
 
 
 def test_generate_accepts_valid_api_key(monkeypatch):
-    import app.services.resilient_groq_service as groq_service
+    import app.services.llm_orchestrator as groq_service
 
     async def fake_none(query):
         return None
@@ -19,29 +19,13 @@ def test_generate_accepts_valid_api_key(monkeypatch):
     monkeypatch.setattr(groq_service, "get_exact_cache", fake_none)
     monkeypatch.setattr(groq_service, "search_semantic_cache", fake_none)
 
-    class FakeUsage:
-        prompt_tokens = 1
-        completion_tokens = 1
-        total_tokens = 2
+    async def fake_create_completion(messages, model, stream=False):
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }
 
-    class FakeMessage:
-        content = "ok"
-
-    class FakeChoice:
-        message = FakeMessage()
-
-    class FakeCompletion:
-        usage = FakeUsage()
-        choices = [FakeChoice()]
-
-    class FakeClient:
-        class chat:
-            class completions:
-                @staticmethod
-                async def create(**kwargs):
-                    return FakeCompletion()
-
-    monkeypatch.setattr(groq_service, "get_groq_client", lambda: FakeClient())
+    monkeypatch.setattr(groq_service, "_create_completion", fake_create_completion)
     monkeypatch.setattr(groq_service, "record_model_observation", lambda **kwargs: None)
     async def fake_cache_response(**kwargs):
         return None

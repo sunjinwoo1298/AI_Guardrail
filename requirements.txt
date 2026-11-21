@@ -16,3 +16,4 @@ opentelemetry-exporter-otlp
 locust
 transformers
 presidio-analyzer
+httpx
