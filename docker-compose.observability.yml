@@ -11,6 +11,7 @@ services:
       - "8000:8000"
     volumes:
       - ./app:/app/app
+      - hf_cache:/home/app/.cache/huggingface
     depends_on:
       - redis
       - otel-collector
@@ -82,3 +83,4 @@ volumes:
   prometheus_data:
   grafana_data:
   redis_data:
+  hf_cache:

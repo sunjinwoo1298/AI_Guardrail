@@ -59,15 +59,11 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 body = await request.body()
                 if not body:
                     return await call_next(request)
-                async def receive():
-                    return {"type": "http.request", "body": body, "more_body": False}
-                request._receive = receive
                 payload = json.loads(body.decode("utf-8"))
             else:
-                body = await request.body()
-                async def receive():
-                    return {"type": "http.request", "body": body, "more_body": False}
-                request._receive = receive
+                # Read the body so Starlette caches it and replays it downstream.
+                # Do not override request._receive: that breaks streaming responses.
+                await request.body()
             
             # Extract prompt from messages array or prompt field
             if "messages" in payload:
@@ -169,6 +165,11 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         except json.JSONDecodeError:
             logger.warning("Invalid JSON payload received by security middleware")
         except Exception as exc:
-            logger.error(f"Security middleware failed open due to error: {exc}")
+            # Fail closed: an unscreened prompt must never reach the model.
+            logger.exception(f"Security middleware error, rejecting request: {exc}")
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Security screening unavailable, request rejected"},
+            )
 
         return await call_next(request)

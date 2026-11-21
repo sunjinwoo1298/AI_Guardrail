@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import uuid
 from app.core.context import request_id_context
 

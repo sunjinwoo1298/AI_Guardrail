@@ -17,9 +17,9 @@ except ImportError:  # pragma: no cover - optional in test environments
     redis = None
 
 try:
-    from sentence_transformers import SentenceTransformer
+    from app.core.onnx_models import OnnxSentenceEmbedder
 except ImportError:  # pragma: no cover - optional in test environments
-    SentenceTransformer = None
+    OnnxSentenceEmbedder = None
 
 from app.core.config import (
     CACHE_SIMILARITY_THRESHOLD,
@@ -46,10 +46,24 @@ def normalize_prompt(prompt: str) -> str:
     return " ".join(prompt.strip().split()).lower()
 
 
-def build_exact_cache_key(prompt: str) -> str:
-    normalized_prompt = normalize_prompt(prompt)
-    prompt_hash = hashlib.sha256(normalized_prompt.encode("utf-8")).hexdigest()
-    return f"semantic_cache:exact:{prompt_hash}"
+def normalize_model(model: str) -> str:
+    return (model or "").strip().lower()
+
+
+def build_exact_cache_key(prompt: str, model: str) -> str:
+    """Key on model + normalized prompt so one model's answer is never served for another."""
+    material = f"{normalize_model(model)}\x00{normalize_prompt(prompt)}"
+    return f"semantic_cache:exact:{hashlib.sha256(material.encode('utf-8')).hexdigest()}"
+
+
+def _chroma_metadata(payload: dict) -> dict:
+    """Chroma metadata must be flat str/int/float/bool: drop None, JSON-encode nested values."""
+    meta = {}
+    for key, value in payload.items():
+        if value is None:
+            continue
+        meta[key] = value if isinstance(value, (str, int, float, bool)) else json.dumps(value, default=str)
+    return meta
 
 
 def get_redis_client():
@@ -104,15 +118,15 @@ def get_embedding_model():
     if _embedding_model is not None:
         return _embedding_model
 
-    if SentenceTransformer is None:
-        logger.warning("SentenceTransformer library is unavailable")
+    if OnnxSentenceEmbedder is None:
+        logger.warning("ONNX embedding runtime is unavailable")
         return None
 
     with _lock:
         if _embedding_model is not None:
             return _embedding_model
 
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        _embedding_model = OnnxSentenceEmbedder(EMBEDDING_MODEL_NAME)
         logger.info(f"Embedding model loaded: {EMBEDDING_MODEL_NAME}")
 
     return _embedding_model
@@ -122,11 +136,11 @@ def generate_embedding(text: str):
     model = get_embedding_model()
     if model is None:
         raise RuntimeError("Embedding model is unavailable")
-    embedding = model.encode(text, normalize_embeddings=True)
+    embedding = model.encode(text)
     return embedding.tolist()
 
 
-async def get_exact_cache(prompt: str):
+async def get_exact_cache(prompt: str, model: str):
     async def _lookup():
         def _sync_lookup():
             tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
@@ -139,7 +153,7 @@ async def get_exact_cache(prompt: str):
                     record_cache_lookup("redis", "unavailable")
                     return None
 
-                cached_value = redis_client.get(build_exact_cache_key(prompt))
+                cached_value = redis_client.get(build_exact_cache_key(prompt, model))
                 if cached_value is None:
                     record_cache_lookup("redis", "miss")
                     return None
@@ -159,7 +173,7 @@ async def get_exact_cache(prompt: str):
     return await asyncio.wait_for(_lookup(), timeout=REDIS_TIMEOUT_SECONDS)
 
 
-async def search_semantic_cache(prompt: str):
+async def search_semantic_cache(prompt: str, model: str):
     async def _search():
         def _sync_search():
             tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
@@ -173,6 +187,7 @@ async def search_semantic_cache(prompt: str):
                 results = collection.query(
                     query_embeddings=[query_embedding],
                     n_results=1,
+                    where={"cache_model": normalize_model(model)},
                     include=["documents", "metadatas", "distances"],
                 )
 
@@ -215,6 +230,7 @@ async def cache_response(
     response: str,
     request_id: str,
     model_name: str,
+    cache_model: str,
     prompt_tokens: int,
     completion_tokens: int,
     total_tokens: int,
@@ -229,6 +245,7 @@ async def cache_response(
         "response": response,
         "request_id": request_id,
         "model": model_name,
+        "cache_model": normalize_model(cache_model),
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
@@ -249,7 +266,7 @@ async def cache_response(
                 if span_ctx:
                     span_ctx.__enter__()
                 redis_client.setex(
-                    build_exact_cache_key(prompt),
+                    build_exact_cache_key(prompt, cache_model),
                     CACHE_TTL_SECONDS,
                     json.dumps(payload),
                 )
@@ -272,7 +289,7 @@ async def cache_response(
             collection.add(
                 documents=[response],
                 embeddings=[generate_embedding(prompt)],
-                metadatas=[payload],
+                metadatas=[_chroma_metadata(payload)],
                 ids=[str(uuid.uuid4())],
             )
             if span_ctx:

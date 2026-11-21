@@ -84,7 +84,13 @@ async function* sseEvents(res) {
   if (buffer.trim()) yield buffer;
 }
 
-const stripData = (ev) => (ev.startsWith("data: ") ? ev.slice(6) : ev.replace(/^data:/, ""));
+// An SSE event may span several "data:" lines; per the spec they are joined with "\n".
+const stripData = (ev) =>
+  ev
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(line.startsWith("data: ") ? 6 : 5))
+    .join("\n");
 
 /**
  * Streams from /stream, or from /v1/chat/completions when `messages` is given.

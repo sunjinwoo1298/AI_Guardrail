@@ -62,6 +62,18 @@ export default function Metrics({ settings }) {
   const blocks = groupBy(samples, "ai_proxy_security_blocks_total", "reason");
   const events = groupBy(samples, "ai_proxy_security_events_total", "event");
   const cost = total(samples, "ai_proxy_model_cost_total");
+  const savedCost = total(samples, "ai_proxy_cache_saved_cost_total");
+  // Hit rate over requests that were actually answered (excludes degraded fallbacks).
+  const answered = samples.filter(
+    (s) => s.name === "ai_proxy_model_requests_total" && s.labels.cache_type !== "degraded",
+  );
+  const answeredTotal = answered.reduce((sum, s) => sum + s.value, 0);
+  const answeredHits = answered.filter((s) => s.labels.cache_hit === "true").reduce((sum, s) => sum + s.value, 0);
+  const hitRate = answeredTotal ? `${((answeredHits / answeredTotal) * 100).toFixed(1)}%` : "n/a";
+  const unpriced = total(samples, "ai_proxy_unpriced_requests_total");
+  const estimated = samples
+    .filter((s) => s.name === "ai_proxy_usage_source_total" && s.labels.source === "estimated")
+    .reduce((sum, s) => sum + s.value, 0);
 
   return (
     <div className="page">
@@ -84,8 +96,14 @@ export default function Metrics({ settings }) {
         <dl className="kv panel-body">
           <dt>Total requests</dt>
           <dd>{total(samples, "ai_proxy_http_requests_total")}</dd>
-          <dt>Estimated model cost</dt>
-          <dd>${cost.toFixed(6)}</dd>
+          <dt>Cache hit rate</dt>
+          <dd>{hitRate} ({answeredHits} of {answeredTotal} answered)</dd>
+          <dt>Model cost</dt>
+          <dd>${cost.toFixed(6)}{unpriced > 0 && ` · ${unpriced} request(s) used an unpriced model`}</dd>
+          <dt>Cost saved by cache</dt>
+          <dd>${savedCost.toFixed(6)}</dd>
+          <dt>Token counts estimated</dt>
+          <dd>{estimated} request(s) (provider did not report usage)</dd>
           <dt>Tokens (total)</dt>
           <dd>
             {samples

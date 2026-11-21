@@ -5,6 +5,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import API_KEYS, REQUIRE_API_KEY, RPM_LIMIT_PER_MINUTE, TPM_LIMIT_PER_MINUTE
 from app.core.logger import logger
 from app.core.request_id import generate_request_id
+from app.core.tokens import estimate_messages_tokens, estimate_text_tokens
 from app.security.rate_limiter import check_and_consume
 
 
@@ -27,30 +28,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
             estimated_tokens = 0
             if request.url.path.startswith(("/generate", "/stream", "/v1/chat/completions")):
                 try:
+                    # Starlette caches the body read here and replays it to
+                    # downstream handlers; overriding request._receive breaks
+                    # disconnect detection and crashes streaming responses.
                     body = await request.body()
-                    async def receive():
-                        return {"type": "http.request", "body": body, "more_body": False}
-                    request._receive = receive
                     if body:
                         import json
                         payload = json.loads(body.decode("utf-8"))
                         request.state.raw_payload = payload
                         if "messages" in payload:
-                            messages = payload.get("messages", [])
-                            text_to_estimate = ""
-                            for msg in messages:
-                                if isinstance(msg, dict) and msg.get("role") == "user":
-                                    content = msg.get("content")
-                                    if isinstance(content, str):
-                                        text_to_estimate += content
-                                    elif isinstance(content, list):
-                                        for part in content:
-                                            if isinstance(part, dict) and part.get("type") == "text":
-                                                text_to_estimate += part.get("text", "")
-                            estimated_tokens = max(1, len(text_to_estimate) // 4)
+                            estimated_tokens = estimate_messages_tokens(payload.get("messages", []))
                         else:
-                            prompt = str(payload.get("prompt", ""))
-                            estimated_tokens = max(1, len(prompt) // 4)
+                            estimated_tokens = max(1, estimate_text_tokens(str(payload.get("prompt", ""))))
                 except Exception:
                     estimated_tokens = 1
 

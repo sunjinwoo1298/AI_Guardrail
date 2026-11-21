@@ -1,11 +1,21 @@
+# Only ./app and requirements.txt are needed by the backend image.
 .git
+.github
 .gitignore
 .pytest_cache
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.env
-load_test/results*
 .vscode
 .idea
+.env
+**/__pycache__
+**/*.py[cod]
+frontend
+tests
+load_test
+observability
+context
+docker-compose*.yml
+Dockerfile
+README.MD
+imp.txt
+requirements-dev.txt
+venv

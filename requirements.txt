@@ -1,19 +1,22 @@
+# Runtime dependencies only (installed in the Docker image).
+# Test / load-test tooling lives in requirements-dev.txt.
 fastapi
 uvicorn
 groq
 python-dotenv
 chromadb
 redis
-sentence-transformers
+# Model inference via ONNX Runtime (replaces torch/transformers/sentence-transformers)
+onnxruntime
+tokenizers
+huggingface_hub
+numpy
 pydantic
 prometheus-client
-pytest
 opentelemetry-api
 opentelemetry-sdk
 opentelemetry-instrumentation-fastapi
 opentelemetry-instrumentation-asgi
-opentelemetry-exporter-otlp
-locust
-transformers
+opentelemetry-exporter-otlp-proto-http
 presidio-analyzer
 httpx

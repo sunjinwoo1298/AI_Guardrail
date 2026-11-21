@@ -7,7 +7,7 @@ import TestCases from "./components/TestCases.jsx";
 import Metrics from "./components/Metrics.jsx";
 
 const DEFAULTS = { baseUrl: "/api", apiKey: "test-api-key", model: MODELS[0], endpoint: "generate" };
-const EMPTY_STATS = { requests: 0, cacheHits: 0, blocked: 0, tokens: 0, saved: 0 };
+const EMPTY_STATS = { requests: 0, served: 0, cacheHits: 0, blocked: 0, tokens: 0, saved: 0 };
 
 const VIEWS = [
   ["playground", "Playground"],
@@ -58,6 +58,9 @@ export default function App() {
   const onResult = useCallback((result) => {
     setStats((s) => ({
       requests: s.requests + 1,
+      // Only responses that report cache status count toward the hit rate
+      // (blocked, rate-limited, degraded and raw chat-completion replies do not).
+      served: s.served + (result.ok && typeof result.data?.cache_hit === "boolean" && result.data?.status !== "degraded" ? 1 : 0),
       blocked: s.blocked + (result.status === 403 ? 1 : 0),
       cacheHits: s.cacheHits + (result.data?.cache_hit ? 1 : 0),
       tokens: s.tokens + (result.data?.total_tokens || 0),
@@ -65,7 +68,7 @@ export default function App() {
     }));
   }, []);
 
-  const hitRate = stats.requests ? Math.round((stats.cacheHits / stats.requests) * 100) : 0;
+  const hitRate = stats.served ? Math.round((stats.cacheHits / stats.served) * 100) : 0;
 
   return (
     <div className="app">

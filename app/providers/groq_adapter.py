@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import httpx
 from typing import AsyncGenerator
 from app.providers.base import BaseLLMAdapter
@@ -66,7 +68,9 @@ class GroqAdapter(BaseLLMAdapter):
         payload = {
             "model": model,
             "messages": messages,
-            "stream": True
+            "stream": True,
+            # Ask the provider to append a final chunk with real token usage.
+            "stream_options": {"include_usage": True},
         }
         if temperature is not None:
             payload["temperature"] = temperature

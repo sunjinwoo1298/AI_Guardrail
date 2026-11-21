@@ -35,7 +35,8 @@ async def stream(request: Request, payload: PromptRequest):
         async for event_type, event_data in stream_response(sanitized_prompt, security_context=security_context):
             if event_type == "content":
                 delta_content = event_data["choices"][0]["delta"].get("content", "")
-                yield f"data: {delta_content}\n\n"
+                # SSE: every line of a multi-line chunk needs its own "data:" prefix.
+                yield "".join(f"data: {line}\n" for line in delta_content.split("\n")) + "\n"
             elif event_type == "metadata":
                 yield f"data: {json.dumps({'__meta': event_data})}\n\n"
 

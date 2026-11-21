@@ -61,8 +61,10 @@ def _behavior_risk(prompt: str) -> Tuple[float, dict]:
 def calculate_risk_score(text: str) -> Tuple[float, list, list]:
     tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
     span_ctx = tracer.start_as_current_span("security.risk_engine") if tracer else None
-    if span_ctx:
-        span_ctx.__enter__()
+    # start_as_current_span() returns a context manager; the span is what __enter__
+    # returns. Calling set_attribute on the manager raised, which made the security
+    # middleware fail open.
+    span = span_ctx.__enter__() if span_ctx else None
     try:
         pii_detections = detect_pii(text)
         injection_result = score_prompt_injection(text)
@@ -90,12 +92,12 @@ def calculate_risk_score(text: str) -> Tuple[float, list, list]:
 
         risk_score = min(risk_score, 1.0)
 
-        if span_ctx:
-            span_ctx.set_attribute("risk_score", risk_score)
-            span_ctx.set_attribute("pii_types", ",".join(sorted(pii_types)) if pii_types else "none")
-            span_ctx.set_attribute("injection_confidence", injection_confidence)
-            span_ctx.set_attribute("behavior_risk", behavior_meta["behavior_risk"])
-            span_ctx.set_attribute("behavior_count", behavior_meta["behavior_count"])
+        if span is not None and hasattr(span, "set_attribute"):
+            span.set_attribute("risk_score", risk_score)
+            span.set_attribute("pii_types", ",".join(sorted(pii_types)) if pii_types else "none")
+            span.set_attribute("injection_confidence", injection_confidence)
+            span.set_attribute("behavior_risk", behavior_meta["behavior_risk"])
+            span.set_attribute("behavior_count", behavior_meta["behavior_count"])
 
         record_security_risk(risk_score)
         if pii_detections:

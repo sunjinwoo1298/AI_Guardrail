@@ -4,7 +4,7 @@ from app.services import llm_orchestrator as groq_service
 
 
 def test_generate_response_degrades_when_all_cache_and_model_paths_fail(monkeypatch):
-    async def fake_none(query):
+    async def fake_none(*args, **kwargs):
         return None
 
     async def fake_fail(*args, **kwargs):
@@ -22,7 +22,7 @@ def test_generate_response_degrades_when_all_cache_and_model_paths_fail(monkeypa
 
 
 def test_stream_response_degrades_when_all_models_fail(monkeypatch):
-    async def fake_none(query):
+    async def fake_none(*args, **kwargs):
         return None
 
     async def fake_fail(*args, **kwargs):

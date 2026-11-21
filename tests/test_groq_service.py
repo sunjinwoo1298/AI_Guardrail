@@ -5,7 +5,7 @@ from app.services import llm_orchestrator as groq_service
 
 
 def test_generate_response_uses_exact_cache(monkeypatch):
-    async def fake_exact_cache(query):
+    async def fake_exact_cache(*args, **kwargs):
         return {
             "response": "cached answer",
             "prompt_tokens": 10,
@@ -14,7 +14,7 @@ def test_generate_response_uses_exact_cache(monkeypatch):
             "estimated_cost": 0.0001,
         }
 
-    async def fake_none(query):
+    async def fake_none(*args, **kwargs):
         return None
 
     monkeypatch.setattr(groq_service, "get_exact_cache", fake_exact_cache)
@@ -40,7 +40,7 @@ def test_generate_response_uses_exact_cache(monkeypatch):
 
 
 def test_generate_response_uses_live_model(monkeypatch):
-    async def fake_none(query):
+    async def fake_none(*args, **kwargs):
         return None
 
     monkeypatch.setattr(groq_service, "get_exact_cache", fake_none)
@@ -68,7 +68,7 @@ def test_generate_response_uses_live_model(monkeypatch):
 
 
 def test_generate_response_falls_back_to_secondary_model(monkeypatch):
-    async def fake_none(query):
+    async def fake_none(*args, **kwargs):
         return None
 
     monkeypatch.setattr(groq_service, "get_exact_cache", fake_none)
@@ -107,7 +107,7 @@ def test_generate_response_falls_back_to_secondary_model(monkeypatch):
 
 
 def test_generate_response_degrades_when_all_models_fail(monkeypatch):
-    async def fake_none(query):
+    async def fake_none(*args, **kwargs):
         return None
 
     monkeypatch.setattr(groq_service, "get_exact_cache", fake_none)

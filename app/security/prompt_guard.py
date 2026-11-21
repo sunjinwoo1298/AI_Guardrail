@@ -1,5 +1,6 @@
 import html
 import re
+import threading
 import unicodedata
 from typing import Dict, List
 
@@ -37,6 +38,7 @@ INJECTION_WEIGHTS = {
 }
 
 _classifier = None
+_classifier_lock = threading.Lock()
 
 
 def normalize_text(text: str) -> str:
@@ -62,18 +64,16 @@ def _get_classifier():
     global _classifier
     if _classifier is not None:
         return _classifier
-    try:
-        from transformers import pipeline
+    with _classifier_lock:
+        if _classifier is not None:
+            return _classifier
+        try:
+            from app.core.onnx_models import OnnxTextClassifier
 
-        _classifier = pipeline(
-            "text-classification",
-            model=PROMPT_INJECTION_MODEL_NAME,
-            truncation=True,
-            top_k=None,
-        )
-    except Exception as exc:
-        logger.warning(f"Prompt injection classifier unavailable, falling back to tripwire only: {exc}")
-        _classifier = None
+            _classifier = OnnxTextClassifier(PROMPT_INJECTION_MODEL_NAME)
+        except Exception as exc:
+            logger.warning(f"Prompt injection classifier unavailable, falling back to tripwire only: {exc}")
+            _classifier = None
     return _classifier
 
 

@@ -13,7 +13,7 @@ def test_generate_requires_api_key():
 def test_generate_accepts_valid_api_key(monkeypatch):
     import app.services.llm_orchestrator as groq_service
 
-    async def fake_none(query):
+    async def fake_none(*args, **kwargs):
         return None
 
     monkeypatch.setattr(groq_service, "get_exact_cache", fake_none)

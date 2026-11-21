@@ -1,3 +1,4 @@
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -12,9 +13,24 @@ from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.security_middleware import SecurityMiddleware
 from app.observability.tracing import instrument_fastapi, setup_tracing
 
+def _warm_models():
+    """Load the ONNX models up front so the first requests don't time out on
+    semantic-cache lookups or skip the injection classifier while they load."""
+    from app.security.prompt_guard import _get_classifier
+    from app.services.cache_service import get_embedding_model
+
+    for name, loader in (("prompt-injection classifier", _get_classifier), ("embedding model", get_embedding_model)):
+        try:
+            loader()
+        except Exception as exc:
+            logger.warning(f"Warm-up of {name} failed: {exc}")
+    logger.info("Model warm-up finished")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_settings()
+    threading.Thread(target=_warm_models, name="model-warmup", daemon=True).start()
     yield
 
 
