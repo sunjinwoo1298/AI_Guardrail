@@ -25,7 +25,6 @@
 - [Load test results](#load-test-results)
 - [Repository structure](#repository-structure)
 - [Limitations and roadmap](#limitations-and-roadmap)
-- [Project highlights](#project-highlights)
 
 ---
 
@@ -408,14 +407,3 @@ tests/            Unit, integration and red-team tests
 - Rate limits use fixed one-minute windows.
 - The behaviour risk score is tracked per prompt fingerprint, not per user.
 - Ideas: per-app system-prompt canaries, admin UI for keys and policies, sliding-window limits, output schema validation.
-
-## Project highlights
-
-- Built an OpenAI-compatible LLM gateway that applications adopt by changing only `base_url` and `api_key`, with per-app keys, policies, cache isolation and per-app observability.
-- Layered prompt-injection defence: regex tripwires, a local ONNX classifier and a Llama Prompt Guard 2 verifier, covering both direct prompts and indirect injection in tool results.
-- PII protection that masks data before it leaves the proxy and redacts it from responses, including mid-stream.
-- Cost controls: exact and semantic caching (scoped so cached answers never cross apps or conversations), per-app token budgets, and a free-only guard for OpenRouter.
-- Resilience: timeouts, retries, circuit breakers, fallback models (including for streams), and correct `4xx`/`429`/`503` semantics with `Retry-After`.
-- Observability with Prometheus, Grafana (16 panels, per-app breakdowns), alert rules, Jaeger tracing and structured JSON logs.
-- Cut the Docker image from 3.0 GB to 994 MB by replacing PyTorch with ONNX Runtime, with identical model outputs and faster inference.
-- 81 automated tests, plus end-to-end checks with the official OpenAI SDK.
