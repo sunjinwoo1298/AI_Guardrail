@@ -1,4 +1,8 @@
+import asyncio
+import contextvars
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -44,6 +48,12 @@ def sanitize_messages(messages: list[dict]) -> list[dict]:
         sanitized.append(new_msg)
     return sanitized
 
+
+# Security scans (ONNX + Presidio, CPU-bound) run here, separate from the default pool that
+# serves cache I/O. Scale beyond one core with more processes (WEB_CONCURRENCY).
+_SCAN_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.getenv("SECURITY_SCAN_THREADS", "4")), thread_name_prefix="security-scan"
+)
 
 # Roles whose content comes from outside the application: end users, and tool / function
 # results (retrieved documents, web pages, API responses), where indirect prompt
@@ -122,10 +132,21 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                     },
                 )
 
+            # The scan is CPU work (ONNX, Presidio) plus a possible verifier HTTP call. Run it
+            # in a worker thread: done inline it blocked the event loop, so one slow scan
+            # stalled every other request (p50 rose from ~45 ms idle to ~370 ms under load).
+            # ONNX Runtime releases the GIL, so scans also run in parallel across cores.
+            # A dedicated pool: when scans shared the default pool, overload queued the quick
+            # Redis/Chroma lookups behind them until they timed out, and every timed-out
+            # cache lookup became an extra (paid) model call.
+            loop = asyncio.get_running_loop()
+            ctx = contextvars.copy_context()  # keep app/request IDs for logs and metrics
             if "messages" in payload:
-                risk_score, pii_detections, injection_detections = _score_each(untrusted_texts)
+                risk_score, pii_detections, injection_detections = await loop.run_in_executor(
+                    _SCAN_EXECUTOR, ctx.run, _score_each, untrusted_texts)
             else:
-                risk_score, pii_detections, injection_detections = calculate_risk_score(prompt)
+                risk_score, pii_detections, injection_detections = await loop.run_in_executor(
+                    _SCAN_EXECUTOR, ctx.run, calculate_risk_score, prompt)
             if ENABLE_PII_MASKING:
                 try:
                     # Detection offsets are per message for chat payloads, so they only

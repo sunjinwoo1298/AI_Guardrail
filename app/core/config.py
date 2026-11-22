@@ -13,7 +13,9 @@ OPENROUTER_FREE_ONLY = os.getenv("OPENROUTER_FREE_ONLY", "true").lower() == "tru
 DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "groq").lower()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "semantic_cache")
-CACHE_SIMILARITY_THRESHOLD = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.15"))
+# Max cosine distance for a semantic cache hit. Measured: real paraphrases 0.01-0.10,
+# different questions with the same template as low as 0.11, so 0.15 served wrong answers.
+CACHE_SIMILARITY_THRESHOLD = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.10"))
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-small-en-v1.5")
 ENABLE_PII_MASKING = os.getenv("ENABLE_PII_MASKING", "true").lower() == "true"
@@ -89,7 +91,11 @@ PROMPT_INJECTION_MODEL_NAME = os.getenv(
 )
 # Second-opinion injection model (Llama Prompt Guard 2 on Groq), consulted only when
 # the local classifier is the sole signal; cuts false positives on harmless prompts.
-INJECTION_VERIFIER_ENABLED = os.getenv("INJECTION_VERIFIER_ENABLED", "true").lower() == "true"
+# OFF by default: on load_test/security_eval.py the verifier cleared most classifier false
+# positives but also overruled real attacks (held-out detection 93% -> 47%), because it
+# scores system-prompt extraction and authority claims as safe. Enable per app with
+# APP_POLICIES {"app": {"injection_verifier": true}} where false blocks matter more.
+INJECTION_VERIFIER_ENABLED = os.getenv("INJECTION_VERIFIER_ENABLED", "false").lower() == "true"
 INJECTION_VERIFIER_MODEL = os.getenv("INJECTION_VERIFIER_MODEL", "meta-llama/llama-prompt-guard-2-86m")
 INJECTION_VERIFIER_THRESHOLD = float(os.getenv("INJECTION_VERIFIER_THRESHOLD", "0.5"))
 INJECTION_VERIFIER_TIMEOUT_SECONDS = float(os.getenv("INJECTION_VERIFIER_TIMEOUT_SECONDS", "3"))

@@ -13,6 +13,7 @@ from typing import Dict, List
 import numpy as np
 
 MAX_SEQUENCE_LENGTH = int(os.getenv("ONNX_MAX_SEQUENCE_LENGTH", "512"))
+ONNX_INTRA_OP_THREADS = int(os.getenv("ONNX_INTRA_OP_THREADS", "1"))
 
 
 def _download(repo_id: str, filename: str) -> str:
@@ -33,6 +34,11 @@ class OnnxModel:
 
         options = ort.SessionOptions()
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # ONNX Runtime defaults to one thread per core for EVERY inference. Concurrent
+        # requests (scan threads x worker processes) then oversubscribe the CPU; small
+        # per-inference thread counts and more parallel requests give more throughput.
+        options.intra_op_num_threads = ONNX_INTRA_OP_THREADS
+        options.inter_op_num_threads = 1
         self.session = ort.InferenceSession(
             _download(repo_id, "model.onnx"),
             sess_options=options,
