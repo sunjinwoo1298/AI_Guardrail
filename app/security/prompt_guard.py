@@ -181,6 +181,30 @@ def fast_tripwire(text: str) -> List[str]:
     return matches
 
 
+def tripwire_matches(text: str) -> List[str]:
+    """The phrases (in normalised, lower-cased form) that tripped the tripwires, for
+    showing a reviewer what was caught. Matches inside base64 payloads are reported as
+    the decoded phrase."""
+    found: List[str] = []
+
+    def scan(candidate: str) -> None:
+        lowered = normalize_text(candidate).lower()
+        structural = strip_invisible(unicodedata.normalize("NFKC", candidate))
+        for pattern in INJECTION_PATTERNS + MULTILINGUAL_PATTERNS:
+            match = re.search(pattern, lowered, flags=re.IGNORECASE)
+            if match and match.group(0) not in found:
+                found.append(match.group(0))
+        for pattern in STRUCTURAL_PATTERNS:
+            match = re.search(pattern, structural, flags=re.IGNORECASE)
+            if match and match.group(0).strip() and match.group(0).strip() not in found:
+                found.append(match.group(0).strip())
+
+    scan(text)
+    for payload in _decoded_payloads(text):
+        scan(payload)
+    return found
+
+
 def _scan_windows(text: str) -> List[str]:
     """Overlapping windows covering the whole text. The classifier truncates its input at
     512 tokens, so an injection placed after the first ~2,000 characters of one long

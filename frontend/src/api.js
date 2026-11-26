@@ -1,154 +1,75 @@
-// Thin client for the guardrail proxy. Request functions resolve to
-// { ok, status, data } and never throw for HTTP errors.
+// Client for the AI Guardrail Proxy. Every call goes to the real proxy (through the Vite
+// / nginx "/api" forward); nothing here fakes a response.
 
-function url(settings, path) {
-  return `${settings.baseUrl.replace(/\/+$/, "")}${path}`;
-}
-
-function headers(settings) {
-  const h = { "Content-Type": "application/json" };
-  if (settings.apiKey) h["x-api-key"] = settings.apiKey;
-  return h;
-}
-
-async function readJson(res) {
-  const text = await res.text();
+async function request(baseUrl, path, { method = "GET", key, adminToken, body, headers = {} } = {}) {
+  const started = performance.now();
+  const init = { method, headers: { ...headers } };
+  if (key) init.headers.Authorization = `Bearer ${key}`;
+  if (adminToken) init.headers.Authorization = `Bearer ${adminToken}`;
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  let response;
   try {
-    return JSON.parse(text);
+    response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, init);
+  } catch (error) {
+    return {
+      ok: false, status: 0, ms: Math.round(performance.now() - started), data: null,
+      error: `Could not reach the proxy at ${baseUrl}. Is it running? (${error.message})`,
+    };
+  }
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
   } catch {
-    return { error: text || res.statusText };
+    data = text;
   }
+  return {
+    ok: response.ok,
+    status: response.status,
+    ms: Math.round(performance.now() - started),
+    data,
+    action: response.headers.get("x-guardrail-action"),
+    reasons: (response.headers.get("x-guardrail-reasons") || "").split(",").filter(Boolean),
+    error: response.ok ? null : describeError(response.status, data),
+  };
 }
 
-function networkError(err) {
-  return { ok: false, status: 0, data: { error: `Could not reach proxy: ${err.message}` } };
-}
-
-export async function checkHealth(settings) {
-  try {
-    const res = await fetch(url(settings, "/health"));
-    return res.ok;
-  } catch {
-    return false;
+/** One plain sentence saying what failed and what to do about it. */
+export function describeError(status, data) {
+  const err = data && typeof data === "object" ? data.error || data.detail : null;
+  const message = typeof err === "string" ? err : err?.message;
+  const code = err && typeof err === "object" ? err.code : data?.code;
+  if (status === 401) return message && message !== "Unauthorized"
+    ? message : "The proxy rejected the API key. Pick another key in the tenant switcher.";
+  if (status === 403 && code === "insufficient_scope") return message;
+  if (status === 403 && (code === "blocked_by_policy" || data?.reasons)) return "Blocked by the guardrail policy.";
+  if (status === 413) return message || "The input is longer than the project allows.";
+  if (status === 429) return message || "Rate limit or monthly budget reached for this project.";
+  if (status === 503) return message || "The proxy could not reach a model or a required service (Redis, database).";
+  if (status === 404) return message || "Not found. The proxy may be an older version without this endpoint.";
+  if (status === 422) {
+    if (Array.isArray(data?.detail)) return data.detail.map((d) => d.msg).join("; ");
+    return message || "The request was invalid.";
   }
+  return message || `The proxy answered ${status}.`;
 }
 
-export async function fetchMetrics(settings) {
-  // Trailing slash avoids the redirect from the mounted metrics app.
-  const res = await fetch(url(settings, "/metrics/"));
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.text();
-}
+export const proxy = {
+  health: (c) => request(c.baseUrl, "/health"),
+  ready: (c) => request(c.baseUrl, "/ready"),
+  scan: (c, key, body, session) =>
+    request(c.baseUrl, "/v1/guard/scan", {
+      method: "POST", key, body, headers: session ? { "x-guardrail-session": session } : {},
+    }),
+  generate: (c, key, prompt) => request(c.baseUrl, "/generate", { method: "POST", key, body: { prompt } }),
+};
 
-export async function generate(settings, prompt) {
-  try {
-    const res = await fetch(url(settings, "/generate"), {
-      method: "POST",
-      headers: headers(settings),
-      body: JSON.stringify({ prompt }),
-    });
-    return { ok: res.ok, status: res.status, data: await readJson(res) };
-  } catch (err) {
-    return networkError(err);
-  }
-}
-
-export async function chatCompletion(settings, model, messages) {
-  try {
-    const res = await fetch(url(settings, "/v1/chat/completions"), {
-      method: "POST",
-      headers: headers(settings),
-      body: JSON.stringify({ model, messages, stream: false }),
-    });
-    return { ok: res.ok, status: res.status, data: await readJson(res) };
-  } catch (err) {
-    return networkError(err);
-  }
-}
-
-// Yields raw SSE events (text between blank lines).
-async function* sseEvents(res) {
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buffer.indexOf("\n\n")) !== -1) {
-      yield buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-    }
-  }
-  if (buffer.trim()) yield buffer;
-}
-
-// An SSE event may span several "data:" lines; per the spec they are joined with "\n".
-const stripData = (ev) =>
-  ev
-    .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(line.startsWith("data: ") ? 6 : 5))
-    .join("\n");
-
-/**
- * Streams from /stream, or from /v1/chat/completions when `messages` is given.
- * Calls onChunk(text) per delta. Resolves { ok, status, data } where data is the
- * final metadata (/stream) or an error body.
- */
-export async function streamResponse(settings, { prompt, model, messages }, onChunk) {
-  const chat = Boolean(messages);
-  try {
-    const res = await fetch(url(settings, chat ? "/v1/chat/completions" : "/stream"), {
-      method: "POST",
-      headers: headers(settings),
-      body: JSON.stringify(chat ? { model, messages, stream: true } : { prompt }),
-    });
-    if (!res.ok) return { ok: false, status: res.status, data: await readJson(res) };
-
-    let meta = null;
-    for await (const ev of sseEvents(res)) {
-      const payload = stripData(ev);
-      if (chat) {
-        if (payload.trim() === "[DONE]") break;
-        try {
-          const text = JSON.parse(payload)?.choices?.[0]?.delta?.content;
-          if (text) onChunk(text);
-        } catch {
-          /* ignore malformed chunk */
-        }
-        continue;
-      }
-      if (payload.startsWith('{"__meta"')) {
-        try {
-          meta = JSON.parse(payload).__meta;
-          continue;
-        } catch {
-          /* fall through and treat as text */
-        }
-      }
-      onChunk(payload);
-    }
-    return { ok: true, status: res.status, data: meta || {} };
-  } catch (err) {
-    return networkError(err);
-  }
-}
-
-// Parse Prometheus text exposition into [{ name, labels, value }].
-export function parseMetrics(text) {
-  const out = [];
-  for (const line of text.split("\n")) {
-    if (!line || line.startsWith("#")) continue;
-    const m = line.match(/^([a-zA-Z_:][\w:]*)(?:\{([^}]*)\})?\s+(\S+)/);
-    if (!m) continue;
-    const labels = {};
-    if (m[2]) {
-      for (const p of m[2].matchAll(/(\w+)="((?:[^"\\]|\\.)*)"/g)) labels[p[1]] = p[2];
-    }
-    const value = Number(m[3]);
-    if (!Number.isNaN(value)) out.push({ name: m[1], labels, value });
-  }
-  return out;
-}
+export const admin = {
+  get: (c, path) => request(c.baseUrl, `/admin/v1${path}`, { adminToken: c.adminToken }),
+  post: (c, path, body = {}) => request(c.baseUrl, `/admin/v1${path}`, { method: "POST", adminToken: c.adminToken, body }),
+  put: (c, path, body) => request(c.baseUrl, `/admin/v1${path}`, { method: "PUT", adminToken: c.adminToken, body }),
+  patch: (c, path, body) => request(c.baseUrl, `/admin/v1${path}`, { method: "PATCH", adminToken: c.adminToken, body }),
+};

@@ -3,3 +3,5 @@ __pycache__/
 .env
 imp.txt
 *.csv
+.superdesign/tmp/
+.claude/launch.json

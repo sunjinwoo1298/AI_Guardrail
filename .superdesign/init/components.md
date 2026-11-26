@@ -1,3 +1,15 @@
+# Components
+
+Framework: React 18 + Vite 5 (SPA, no router library; views switched by state in App.jsx). No component library. Plain global CSS (`src/styles.css`) with CSS custom properties. Backend: FastAPI AI Guardrail Proxy, reached through the Vite dev proxy at `/api`.
+
+Shared UI primitives are plain HTML elements styled by global classes in `src/styles.css` (`.panel`, `.panel-head`, `.panel-body`, `.tag`, `.callout`, `.meter`, `.kv`, `button.primary`, `button.secondary`). The reusable React pieces are the result renderers below.
+
+## ResultPanel (ErrorSummary, MetadataDetails, SecurityDetails)
+Renders a request's outcome: status tags, metadata key/values, PII and injection findings.
+
+### `frontend/src/components/ResultPanel.jsx`
+
+```jsx
 const fmtCost = (n) => `$${Number(n || 0).toFixed(6)}`;
 
 function riskLevel(score) {
@@ -152,3 +164,5 @@ export default function ResultPanel({ result }) {
     </div>
   );
 }
+
+```

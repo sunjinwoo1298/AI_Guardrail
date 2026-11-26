@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "inspect": {
+      "targetKind": "new-target",
+      "projectId": "1e5551a9-9397-4fab-ad9f-fc5ce3fcb99e",
+      "activeDraftId": "292cc8a3-9671-4ded-9222-f5f3918c3e75",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": [],
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "frontend/src/presets.js"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "7d7651c0e614432f940d7acc232c5b74d2883c2e9ba9d0c5475bb33e16aa1dd2",
+        "frontend/src/presets.js": "2383c07342350c0f7dcbec4f12fe6670fe7af54f23b45373fd3fac0a10460b5b"
+      },
+      "components": [],
+      "drafts": {
+        "292cc8a3-9671-4ded-9222-f5f3918c3e75": {
+          "title": "Guardrail Proxy - Inspect Request",
+          "visualDirection": "inspected-document: paper, ink redaction bars, checkpoint trace",
+          "currentVersion": 3
+        }
+      },
+      "updatedAt": "2026-11-26T14:17:01.890833+00:00"
+    },
+    "tenants-and-policies": {
+      "targetKind": "new-target",
+      "projectId": "1e5551a9-9397-4fab-ad9f-fc5ce3fcb99e",
+      "activeDraftId": "8543bdcc-45a2-46cc-814c-094bd3814414",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": [],
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "frontend/src/presets.js"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "7d7651c0e614432f940d7acc232c5b74d2883c2e9ba9d0c5475bb33e16aa1dd2",
+        "frontend/src/presets.js": "2383c07342350c0f7dcbec4f12fe6670fe7af54f23b45373fd3fac0a10460b5b"
+      },
+      "components": [],
+      "drafts": {
+        "8543bdcc-45a2-46cc-814c-094bd3814414": {
+          "title": "Tenants and policies",
+          "visualDirection": "inspected-document: paper, ink redaction bars, checkpoint trace",
+          "parentDraftId": "292cc8a3-9671-4ded-9222-f5f3918c3e75",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-11-26T14:26:52.555159+00:00",
+      "sourceTarget": "inspect",
+      "sourceDraftId": "292cc8a3-9671-4ded-9222-f5f3918c3e75"
+    },
+    "agent-security": {
+      "targetKind": "new-target",
+      "projectId": "1e5551a9-9397-4fab-ad9f-fc5ce3fcb99e",
+      "activeDraftId": "53d253c8-b433-447e-ab4a-da3efb69b2f4",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": [],
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "frontend/src/presets.js"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "7d7651c0e614432f940d7acc232c5b74d2883c2e9ba9d0c5475bb33e16aa1dd2",
+        "frontend/src/presets.js": "2383c07342350c0f7dcbec4f12fe6670fe7af54f23b45373fd3fac0a10460b5b"
+      },
+      "components": [],
+      "drafts": {
+        "53d253c8-b433-447e-ab4a-da3efb69b2f4": {
+          "title": "Agent security",
+          "visualDirection": "inspected-document: paper, ink redaction bars, checkpoint trace",
+          "parentDraftId": "292cc8a3-9671-4ded-9222-f5f3918c3e75",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-11-26T14:26:52.555159+00:00",
+      "sourceTarget": "inspect",
+      "sourceDraftId": "292cc8a3-9671-4ded-9222-f5f3918c3e75"
+    }
+  }
+}
