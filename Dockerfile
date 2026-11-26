@@ -30,6 +30,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/home/app/.cache/huggingface \
     HF_HUB_DISABLE_TELEMETRY=1
 
+# Apply Debian security updates published after the base image was built (e.g. libzstd1,
+# CVE-2026-124851), so the image scan in CI doesn't fail on already-fixed OS packages.
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/*
+
 # Pre-create the model cache dir so a mounted volume inherits app ownership
 # (otherwise Docker creates it as root and model downloads fail with EACCES).
 RUN useradd --create-home --uid 1000 app \
