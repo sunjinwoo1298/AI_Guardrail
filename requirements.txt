@@ -32,3 +32,6 @@ psycopg2-binary>=2.9.9,<3.0
 cryptography>=42.0,<47.0
 # Agent tool-argument schemas (policy.tools.rules[].arguments_schema)
 jsonschema>=4.20,<5.0
+# Admin SSO (OIDC JWT verification) and YAML parsing used by the app and tests
+PyJWT[crypto]>=2.8,<3.0
+PyYAML>=6.0,<7.0

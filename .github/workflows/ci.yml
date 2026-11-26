@@ -33,7 +33,7 @@ jobs:
       - name: Build the image
         run: docker build -t ai-guardrail-proxy:ci .
       - name: Scan the image (fail on fixable critical / high)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: ai-guardrail-proxy:ci
           severity: CRITICAL,HIGH
