@@ -51,6 +51,7 @@ function toView(kind, res, sent, tenantLabel) {
     model: d.model, latency: d.latency, cacheHit: d.cache_hit, cacheType: d.cache_type,
     tokens: d.total_tokens, cost: d.estimated_cost, requestId: d.request_id, policyMode: d.policy_mode,
     degraded: d.status === "degraded",
+    outputRedacted: typeof d.output_redacted === "number" ? d.output_redacted : null,
   };
 }
 
@@ -106,10 +107,13 @@ function buildTrace(v) {
     steps.push(v.cacheHit
       ? { name: "Model", verdict: "pass", pill: "cache hit", detail: `Answered from the ${v.cacheType} cache, no model call` }
       : { name: "Model", verdict: "pass", detail: `${v.model}, ${Math.round((v.latency || 0) * 1000)} ms` });
-    const n = countMasks(v.answer);
+    // The proxy reports how many values it redacted; labels the model wrote itself
+    // (echoing its masked prompt) are not counted.
+    const n = v.outputRedacted;
     steps.push(n
       ? { name: "Output redaction", verdict: "flag", pill: "redacted", detail: `${n} value${n > 1 ? "s" : ""} removed from the answer` }
-      : { name: "Output redaction", verdict: "pass", detail: "Nothing to redact" });
+      : { name: "Output redaction", verdict: "pass",
+          detail: v.cacheHit ? "Cached answers are stored already redacted" : n === 0 ? "Nothing to redact" : "Checked" });
   }
   return steps;
 }
@@ -242,7 +246,9 @@ export default function Inspect() {
               <div className="doc-label"><h3>What your app received</h3></div>
               <div className="sheet"><InspectedText text={view.answer} prose /></div>
               <p className="caption">
-                {countMasks(view.answer) ? "Bars show values redacted from the model's answer." : "The answer passed output redaction unchanged."}
+                {view.outputRedacted
+                  ? `${view.outputRedacted} value${view.outputRedacted > 1 ? "s were" : " was"} redacted from the model's answer.`
+                  : "Labels in the answer come from the masked prompt the model saw; nothing new needed redacting."}
               </p>
             </section>
           )}

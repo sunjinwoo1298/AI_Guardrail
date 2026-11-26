@@ -271,7 +271,7 @@ export default function Tenants() {
                 </div>
                 <div className="policy-row">
                   <div><label htmlFor="p-allow">Allowed personal data</label><div className="hint">Sent unmasked</div></div>
-                  <input id="p-allow" className="payload" placeholder="EMAIL_ADDRESS, PHONE_NUMBER"
+                  <input id="p-allow" className="payload" placeholder="None (for example EMAIL_ADDRESS)"
                          value={(draft.pii?.allow_entities || []).join(", ")}
                          onChange={(e) => setDraft(setPath(draft, ["pii", "allow_entities"],
                            e.target.value.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean)))} />

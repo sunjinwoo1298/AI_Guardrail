@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 import uuid
 import threading
@@ -141,6 +142,15 @@ def _truncate_response(text: str):
     return text if len(text) <= MAX_RESPONSE_CHARS else text[:MAX_RESPONSE_CHARS] + "..."
 
 
+_MASK_TOKEN = re.compile(r"\[(?:REDACTED_SYSTEM_PROMPT|image removed[^\]]*|[A-Z][A-Z_]{1,30})\]")
+
+
+def _redaction_count(raw: Optional[str], redacted: Optional[str]) -> int:
+    """Values the output redaction replaced. Labels the model itself wrote (it may echo
+    "[EMAIL]" from its masked prompt) are present in both texts and not counted."""
+    return max(0, len(_MASK_TOKEN.findall(redacted or "")) - len(_MASK_TOKEN.findall(raw or "")))
+
+
 def _build_metadata_payload(**kwargs) -> dict:
     payload = {
         "status": kwargs.get("status", "success"),
@@ -156,6 +166,8 @@ def _build_metadata_payload(**kwargs) -> dict:
         "request_id": kwargs["request_id"],
         "response": kwargs["response"],
     }
+    if kwargs.get("output_redacted") is not None:
+        payload["output_redacted"] = kwargs["output_redacted"]
     if kwargs.get("usage_source"):
         payload["usage_source"] = kwargs["usage_source"]
     if kwargs.get("similarity_distance") is not None:
@@ -728,6 +740,7 @@ async def _generate_response(
             estimated_cost=estimated_cost,
             cache_saved_cost=0.0,
             usage_source=usage_source,
+            output_redacted=_redaction_count(raw_response_text, response_text),
             security_metadata=security_metadata
         )
 
@@ -1134,6 +1147,7 @@ async def _stream_response(
             estimated_cost=estimated_cost,
             cache_saved_cost=0.0,
             usage_source=usage_source,
+            output_redacted=_redaction_count(full_response, sanitized_full_response),
             security_metadata=security_metadata
         )
         yield "metadata", metadata_payload

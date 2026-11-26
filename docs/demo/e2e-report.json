@@ -1,0 +1,198 @@
+{
+  "results": [
+    {
+      "check": "proxy /health via console nginx",
+      "ok": true,
+      "detail": "{\"status\":\"ok\"}"
+    },
+    {
+      "check": "/ready: classifier, Redis and Postgres",
+      "ok": true,
+      "detail": "{'warmup_complete': True, 'injection_classifier': True, 'redis': True, 'database': True}"
+    },
+    {
+      "check": "console page served",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "personal data masked, request allowed",
+      "ok": true,
+      "detail": "Customer [EMAIL] called from [PHONE] about invoice 8812. Card [CREDIT_CARD] was charged twice. Draft an apology."
+    },
+    {
+      "check": "instruction override blocked",
+      "ok": true,
+      "detail": "['prompt_injection']"
+    },
+    {
+      "check": "injection inside a tool result blocked",
+      "ok": true,
+      "detail": "['prompt_injection']"
+    },
+    {
+      "check": "zero-width evasion blocked",
+      "ok": true,
+      "detail": "['prompt_injection']"
+    },
+    {
+      "check": "Spanish attack blocked",
+      "ok": true,
+      "detail": "['prompt_injection']"
+    },
+    {
+      "check": "ordinary question allowed",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "check": "output scan redacts secrets and email",
+      "ok": true,
+      "detail": "Your key is [API_KEY] and the admin is [EMAIL]"
+    },
+    {
+      "check": "unknown key rejected (401)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "Groq answer through /generate",
+      "ok": true,
+      "detail": "model=groq/openai/gpt-oss-120b tokens=230 cost=0.0"
+    },
+    {
+      "check": "repeat served from the exact cache (no model call)",
+      "ok": true,
+      "detail": "cache_type=exact"
+    },
+    {
+      "check": "chat completion (Groq): model saw only the masked email",
+      "ok": true,
+      "detail": "x-guardrail-action=allow reply='Hello [EMAIL],\\n\\nI hope this message finds you well and that your day is as bright as your inbox!'"
+    },
+    {
+      "check": "streamed chat completion has text and ends with [DONE]",
+      "ok": true,
+      "detail": "3 chunks: 'One, two, three, four, five.'"
+    },
+    {
+      "check": "OpenRouter free model through the proxy",
+      "ok": true,
+      "detail": "{\"id\":\"gen-1795716826-15HgayP8rD7rQOX9Ih2O\",\"object\":\"chat.completion\",\"created\":1795716826,\"model\":\"nvidia/nemotron-3.5-lightning:free\",\"provider\":\"Nvidia\",\"sy"
+    },
+    {
+      "check": "organization created",
+      "ok": true,
+      "detail": "{'id': '5ba4428c-b609-47e0-8838-ee338b999180', 'slug': 'e2e-bc9ed', 'name': 'e2e-bc9ed', 'status': 'active', 'created_at': '2026-11-26T18:13:47.448563+00:00'}"
+    },
+    {
+      "check": "issued gpk_ key works",
+      "ok": true,
+      "detail": "gpk_oLPmiCKu"
+    },
+    {
+      "check": "policy v1 published",
+      "ok": true,
+      "detail": "{'project_id': '3cde438f-b00d-4744-bc39-979809af0225', 'version': 1, 'document': {'mode': 'monitor', 'tools': {'allowed': ['search_*']}, 'exfiltration': {'allowed_domains': ['mycompany.com']}, 'session': {'enabled': True, 'max_events': 2}, 'budget': {'monthly_usd': 5.0}}, 'comment': 'e2e monitor', '"
+    },
+    {
+      "check": "monitor mode: attack let through as would_block",
+      "ok": true,
+      "detail": "['prompt_injection']"
+    },
+    {
+      "check": "enforce mode after publish: blocked",
+      "ok": true,
+      "detail": "['prompt_injection']"
+    },
+    {
+      "check": "tool policy: allowed and refused calls",
+      "ok": true,
+      "detail": "['tool_not_allowed:delete_db']"
+    },
+    {
+      "check": "exfiltration image removed",
+      "ok": true,
+      "detail": "See [image removed: c]"
+    },
+    {
+      "check": "session locked after repeated attacks (Redis)",
+      "ok": true,
+      "detail": "{'id': 'e2e-bc9ed', 'tracked': True, 'locked': True}"
+    },
+    {
+      "check": "rollback re-publishes v1 as v3",
+      "ok": true,
+      "detail": "3"
+    },
+    {
+      "check": "budget status readable",
+      "ok": true,
+      "detail": "{'month': '2026-11', 'cost_usd': 0.0, 'tokens': 0, 'monthly_usd': 5.0, 'monthly_tokens': None, 'action': 'block', 'exceeded': [], 'source': 'redis'}"
+    },
+    {
+      "check": "revoked key rejected (401)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "org-scoped admin token cannot see another org (404)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "audit hash chain intact",
+      "ok": true,
+      "detail": "{'73f7889b06ee-1-d5e97904': 42}"
+    },
+    {
+      "check": "usage metered for the project",
+      "ok": true,
+      "detail": "{'requests': 0, 'blocked': 5, 'flagged': 2, 'cache_hits': 0, 'guard_scans': 8, 'input_tokens': 0, 'output_tokens': 0, 'cost_usd': 0.0}"
+    },
+    {
+      "check": "metric ai_proxy_guardrail_decisions_total",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "metric ai_proxy_security_blocks_total",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "metric ai_proxy_model_tokens_total",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "metric ai_proxy_cache_lookups_total",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "Prometheus scrapes the proxy",
+      "ok": true,
+      "detail": "['up']"
+    },
+    {
+      "check": "Prometheus has proxy request data",
+      "ok": true,
+      "detail": "[{'metric': {}, 'value': [1795716849.904, '99']}]"
+    },
+    {
+      "check": "Grafana healthy",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "Jaeger received proxy traces",
+      "ok": true,
+      "detail": "['AI Guardrail Proxy', 'jaeger']"
+    }
+  ],
+  "provider_calls": {
+    "groq": 3,
+    "openrouter": 1
+  }
+}

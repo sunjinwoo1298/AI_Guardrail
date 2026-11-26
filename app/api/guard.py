@@ -161,6 +161,9 @@ async def guard_scan(request: Request, body: GuardScanRequest):
             session["locked"] = True
 
     record_guardrail_decision(decision.action, surface="guard")
+    if decision.blocked:
+        # Count guard-scan blocks too; the "Blocked Prompts" dashboard panels read this.
+        sm.record_security_block(sm._block_metric_reason(decision, injection.get("matches") or []))
     from app.control import metering
 
     metering.record(guard_scans=1)

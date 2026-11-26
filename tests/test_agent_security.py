@@ -662,3 +662,31 @@ def test_guard_scan_says_when_sessions_cannot_be_tracked(monkeypatch):
     body = TestClient(app).post("/v1/guard/scan", headers={**KEY, "x-guardrail-session": "s-2"},
                                 json={"input": "hello"}).json()
     assert body["session"]["tracked"] is False and "Redis" in body["session"]["note"]
+
+
+def test_guard_scan_blocks_are_counted_for_the_dashboard():
+    from app.observability.metrics import SECURITY_BLOCKS_TOTAL
+
+    def total():
+        return sum(s.value for m in SECURITY_BLOCKS_TOTAL.collect() for s in m.samples if s.name.endswith("_total"))
+
+    before = total()
+    TestClient(app).post("/v1/guard/scan", headers=KEY, json={"input": INJECTION})
+    assert total() == before + 1
+
+
+def test_output_redaction_count_ignores_labels_the_model_wrote(monkeypatch):
+    _orchestrator_without_cache(monkeypatch)
+
+    async def completion(messages, model, stream=False, params=None):
+        return {"choices": [{"message": {"role": "assistant",
+                                         "content": "Dear [EMAIL], your card [CREDIT_CARD] is fine. Reach me at bob@corp.example"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+    monkeypatch.setattr(llm_orchestrator, "_create_completion", completion)
+    token = app_context.set(APP)
+    try:
+        _, metadata = asyncio.run(llm_orchestrator.generate_response("hi"))
+    finally:
+        app_context.reset(token)
+    assert metadata["output_redacted"] == 1  # only bob@corp.example was redacted by the proxy

@@ -5,3 +5,4 @@ imp.txt
 *.csv
 .superdesign/tmp/
 .claude/launch.json
+docs/demo/*.mp4 
