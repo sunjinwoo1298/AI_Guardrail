@@ -43,6 +43,21 @@ admin / SSO ──(gpa_ token or OIDC JWT)──▶ /admin/v1
 | Observability | `/metrics` behind a bearer token in production; bounded metric labels | `main.py`, `logging_middleware.py` |
 | Container and Kubernetes | Non-root, read-only root filesystem, all capabilities dropped, seccomp RuntimeDefault, NetworkPolicy, no service-account token | `Dockerfile`, `deploy/helm/` |
 
+## Accepted dependency advisories
+
+CI fails on any known vulnerability in `requirements.txt` (pip-audit), except these,
+which are accepted because no fixed release exists and the vulnerable code isn't reachable:
+
+| Advisory | Package | Why it doesn't apply | Review |
+|---|---|---|---|
+| PYSEC-2026-311 (CVE-2026-45829), pre-auth code injection | chromadb 1.5.9 | Affects Chroma's HTTP server. The proxy runs Chroma embedded in-process for the semantic cache and never starts or exposes a Chroma server. | Re-check on each chromadb release |
+| PYSEC-2026-3813 (CVE-2026-45830), cross-tenant collection access | chromadb 1.5.9 | Server auth layer; not used. Cache isolation between tenants is done by the proxy's own namespacing. | Same |
+| PYSEC-2026-3814 (CVE-2026-45833), code injection | chromadb 1.5.9 | Server API; not exposed. | Same |
+| PYSEC-2026-3815 (CVE-2026-45831), RBAC scope checks | chromadb 1.5.9 | Server RBAC provider; not used. | Same |
+
+Remove the matching `--ignore-vuln` flags in `.github/workflows/ci.yml` once a fixed chromadb
+is released. Moving the semantic cache to Postgres (pgvector) would remove the dependency.
+
 ## Known limitations
 
 - Images, audio and files are not content-scanned; `multimodal.action` controls them.

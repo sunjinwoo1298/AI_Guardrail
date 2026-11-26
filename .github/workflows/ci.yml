@@ -27,9 +27,21 @@ jobs:
         with:
           python-version: "3.12"
       - name: Audit Python dependencies for known vulnerabilities
+        # Accepted, with no fixed chromadb release available (reviewed 2026-11-27; re-check
+        # on every chromadb release and remove the ignore once fixed). All five affect
+        # Chroma's *server* (HTTP API and its auth/RBAC layer). The proxy only runs Chroma
+        # embedded in-process (chromadb.Client / PersistentClient) for the semantic cache
+        # and never starts or exposes a Chroma server, so none is reachable.
+        #   PYSEC-2026-311  (CVE-2026-45829) pre-authentication code injection, server API
+        #   PYSEC-2026-3813 (CVE-2026-45830) cross-tenant collection access, server auth
+        #   PYSEC-2026-3814 (CVE-2026-45833) code injection, server API
+        #   PYSEC-2026-3815 (CVE-2026-45831) SimpleRBACAuthorizationProvider scope checks
+        # See docs/SECURITY.md, "Accepted dependency advisories".
         run: |
           pip install pip-audit
-          pip-audit -r requirements.txt --progress-spinner off
+          pip-audit -r requirements.txt --progress-spinner off \
+            --ignore-vuln PYSEC-2026-311 --ignore-vuln PYSEC-2026-3813 \
+            --ignore-vuln PYSEC-2026-3814 --ignore-vuln PYSEC-2026-3815
       - name: Build the image
         run: docker build -t ai-guardrail-proxy:ci .
       - name: Scan the image (fail on fixable critical / high)
