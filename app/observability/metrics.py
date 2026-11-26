@@ -140,6 +140,12 @@ def record_model_observation(
     cache_hit_label = "true" if cache_hit else "false"
     cache_type_label = cache_type or "none"
     app, model = app_context.get(), model_context.get()
+    # Billing-grade usage (usage_daily + month-to-date budgets) is metered here too, so
+    # every surface that records a model call is counted exactly once.
+    from app.control import metering
+
+    metering.record_model_call(cache_hit=cache_hit, cache_type=cache_type, prompt_tokens=prompt_tokens,
+                               completion_tokens=completion_tokens, cost=estimated_cost)
 
     MODEL_REQUESTS_TOTAL.labels(
         app=app,

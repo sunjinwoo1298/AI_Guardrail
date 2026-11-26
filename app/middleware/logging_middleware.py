@@ -5,16 +5,24 @@ from app.observability.metrics import record_http_request, set_active_request_co
 import time
 
 
+_KNOWN_ENDPOINTS = ("/generate", "/stream", "/v1/chat/completions", "/v1/messages", "/v1/responses",
+                    "/v1/guard/scan", "/v1/models", "/metrics", "/health", "/ready")
+
+
 def normalize_endpoint(path: str) -> str:
-    if path.startswith("/generate"):
-        return "/generate"
-    if path.startswith("/stream"):
-        return "/stream"
-    if path.startswith("/v1/chat/completions"):
-        return "/v1/chat/completions"
-    if path.startswith("/metrics"):
-        return "/metrics"
-    return path or "unknown"
+    """A bounded label value. Raw paths (admin URLs with ids, MCP server names, random
+    404 probes) used to become label values, so any caller could create unlimited
+    Prometheus series."""
+    for known in _KNOWN_ENDPOINTS:
+        if path.startswith(known):
+            return known
+    if path.startswith("/admin/"):
+        return "/admin"
+    if path.startswith("/mcp/"):
+        return "/mcp"
+    if path in ("/", "/docs", "/redoc", "/openapi.json"):
+        return path
+    return "other"
 
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):

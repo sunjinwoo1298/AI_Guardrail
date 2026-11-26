@@ -131,6 +131,15 @@ def _write(batch: List[dict]) -> None:
             logger.error(f"Audit write failed, {len(rows)} events lost: {exc}")
             return  # the chain keeps its last persisted head
         _chain["seq"], _chain["prev"] = seq, prev
+        persisted = [_to_dict(r) for r in rows]
+    # Offer the persisted events to webhooks / the SIEM feed (never blocks this thread long:
+    # deliveries are queued for the webhook worker).
+    try:
+        from app.control import webhooks
+
+        webhooks.dispatch(persisted)
+    except Exception as exc:
+        logger.warning(f"Webhook dispatch failed: {exc!r}")
 
 
 def _run() -> None:
@@ -236,3 +245,41 @@ def purge_expired(retention_days: Optional[int] = None) -> int:
     with db.session_scope() as session:
         result = session.execute(delete(AuditEvent).where(AuditEvent.created_at < cutoff))
         return result.rowcount or 0
+
+
+def encode_cursor(created_at: str, event_id: str) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(f"{created_at}|{event_id}".encode("utf-8")).decode("ascii")
+
+
+def decode_cursor(cursor: str):
+    import base64
+
+    try:
+        created_at, event_id = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8").split("|", 1)
+        return datetime.fromisoformat(created_at), event_id
+    except Exception as exc:
+        raise ValueError("invalid cursor") from exc
+
+
+def export(*, org_id: Optional[str], after: Optional[str] = None, limit: int = 1000) -> tuple:
+    """Events in ascending (created_at, id) order after ``after`` (an opaque cursor), for
+    SIEM pull ingestion. Returns (events, next cursor or None). org_id None = all orgs."""
+    from sqlalchemy import and_, or_
+
+    flush()
+    stmt = select(AuditEvent).order_by(AuditEvent.created_at, AuditEvent.id)
+    if org_id is not None:
+        stmt = stmt.where(AuditEvent.org_id == org_id)
+    if after:
+        created_at, event_id = decode_cursor(after)
+        stmt = stmt.where(or_(AuditEvent.created_at > created_at,
+                              and_(AuditEvent.created_at == created_at, AuditEvent.id > event_id)))
+    limit = max(1, min(limit, 5000))
+    with db.session_scope() as session:
+        rows = session.execute(stmt.limit(limit)).scalars().all()
+        events = [_to_dict(r) for r in rows]
+    if not events:
+        return [], after
+    return events, encode_cursor(events[-1]["created_at"], events[-1]["id"])

@@ -89,6 +89,11 @@ async def lifespan(app: FastAPI):
 
     await close_http_clients()
     await asyncio.to_thread(audit.shutdown)  # write queued audit events before exit
+    from app.control import metering, webhooks
+
+    # Pending usage counters are billing data: flush them on every rolling restart.
+    await asyncio.to_thread(metering.flush)
+    await asyncio.to_thread(webhooks.drain)  # deliveries already due (retries scheduled later are dropped)
 
 
 app = FastAPI(

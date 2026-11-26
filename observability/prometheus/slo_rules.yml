@@ -1,0 +1,106 @@
+# Service level objectives for the AI Guardrail Proxy (see docs/SLA.md).
+#
+# SLO 1, availability: 99.9% of API requests (/v1/*, /generate, /stream) per 30 days are
+#   answered without a proxy-side error. "Bad" = 5xx except 503. A 503 means every
+#   upstream model was unavailable or a dependency check failed closed; it is tracked by
+#   its own SLI (upstream availability) because the proxy cannot fix a provider outage.
+# SLO 2, guard latency: 99% of /v1/guard/scan requests complete within 250 ms (no model
+#   call involved, so this is the proxy's own overhead).
+#
+# Alerts use multi-window, multi-burn-rate rules (Google SRE workbook): page when the
+# error budget burns 14.4x too fast over 1h (and still over 5m), ticket at 6x over 6h.
+
+groups:
+  - name: ai-guardrail-proxy-slo-recording
+    interval: 30s
+    rules:
+      - record: slo:api_requests:rate5m
+        expr: sum(rate(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream"}[5m]))
+      - record: slo:api_errors:rate5m
+        expr: sum(rate(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream",status=~"5..",status!="503"}[5m]))
+      - record: slo:api_unavailable:rate5m
+        expr: sum(rate(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream",status="503"}[5m]))
+
+      - record: slo:api_error_ratio:rate5m
+        expr: slo:api_errors:rate5m / clamp_min(slo:api_requests:rate5m, 1e-9)
+      - record: slo:api_error_ratio:rate30m
+        expr: |
+          sum(rate(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream",status=~"5..",status!="503"}[30m]))
+          / clamp_min(sum(rate(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream"}[30m])), 1e-9)
+      - record: slo:api_error_ratio:rate1h
+        expr: |
+          sum(rate(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream",status=~"5..",status!="503"}[1h]))
+          / clamp_min(sum(rate(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream"}[1h])), 1e-9)
+      - record: slo:api_error_ratio:rate6h
+        expr: |
+          sum(rate(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream",status=~"5..",status!="503"}[6h]))
+          / clamp_min(sum(rate(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream"}[6h])), 1e-9)
+      - record: slo:api_availability:ratio30d
+        expr: |
+          1 - (
+            sum(increase(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream",status=~"5..",status!="503"}[30d]))
+            / clamp_min(sum(increase(ai_proxy_http_requests_total{endpoint=~"/v1/.*|/generate|/stream"}[30d])), 1e-9)
+          )
+
+      - record: slo:guard_slow_ratio:rate5m
+        expr: |
+          1 - (
+            sum(rate(ai_proxy_http_request_duration_seconds_bucket{endpoint="/v1/guard/scan",le="0.25"}[5m]))
+            / clamp_min(sum(rate(ai_proxy_http_request_duration_seconds_count{endpoint="/v1/guard/scan"}[5m])), 1e-9)
+          )
+      - record: slo:guard_slow_ratio:rate1h
+        expr: |
+          1 - (
+            sum(rate(ai_proxy_http_request_duration_seconds_bucket{endpoint="/v1/guard/scan",le="0.25"}[1h]))
+            / clamp_min(sum(rate(ai_proxy_http_request_duration_seconds_count{endpoint="/v1/guard/scan"}[1h])), 1e-9)
+          )
+
+  - name: ai-guardrail-proxy-slo-alerts
+    rules:
+      - alert: AvailabilityErrorBudgetFastBurn
+        expr: slo:api_error_ratio:rate1h > (14.4 * 0.001) and slo:api_error_ratio:rate5m > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "Availability SLO: error budget burning 14x too fast"
+          description: "At this rate the monthly 0.1% error budget is gone in ~2 days. Proxy-side 5xx ratio (1h): {{ $value | humanizePercentage }}."
+
+      - alert: AvailabilityErrorBudgetSlowBurn
+        expr: slo:api_error_ratio:rate6h > (6 * 0.001) and slo:api_error_ratio:rate30m > (6 * 0.001)
+        for: 15m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "Availability SLO: error budget burning 6x too fast"
+          description: "Sustained proxy-side 5xx responses; investigate before the budget is exhausted."
+
+      - alert: UpstreamUnavailableHigh
+        expr: slo:api_unavailable:rate5m / clamp_min(slo:api_requests:rate5m, 1e-9) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          slo: upstream
+        annotations:
+          summary: "More than 5% of requests answered 503 (models unavailable or dependency failing closed)"
+          description: "Check provider status, circuit breakers, Redis (fail-closed rate limits) and the database."
+
+      - alert: GuardLatencySLOBurn
+        expr: slo:guard_slow_ratio:rate1h > (14.4 * 0.01) and slo:guard_slow_ratio:rate5m > (14.4 * 0.01)
+        for: 5m
+        labels:
+          severity: warning
+          slo: guard-latency
+        annotations:
+          summary: "Guard scan latency SLO burning fast"
+          description: "More than 14% of /v1/guard/scan requests exceed 250 ms; scale out or check CPU saturation."
+
+      - alert: AuditEventsDropped
+        expr: increase(ai_proxy_audit_dropped_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Audit events were dropped"
+          description: "The audit queue overflowed; the database is slow or unreachable. Audit completeness is a compliance control."

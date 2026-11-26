@@ -70,6 +70,9 @@ def _block_metric_reason(decision: Decision, injection_detections: list) -> str:
 def _audit_decision(request, decision: Decision, risk_score: float, pii_detections: list, policy: Policy) -> None:
     """Blocks, flags and monitor-mode would-blocks are always audited; allowed requests
     only with AUDIT_LOG_ALLOWED_REQUESTS. Entity types and detector names only, no text."""
+    from app.control import metering
+
+    metering.record_decision(decision.action)
     if decision.action == "allow" and not AUDIT_LOG_ALLOWED_REQUESTS:
         return
     audit.record(

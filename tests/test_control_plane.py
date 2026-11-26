@@ -383,7 +383,11 @@ def test_audit_deletion_is_detected(client):
 def test_admin_api_requires_the_token(client, monkeypatch):
     assert client.get("/admin/v1/orgs").status_code == 401
     assert client.get("/admin/v1/orgs", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    # Without the bootstrap token the API still serves admin tokens / SSO (401 here);
+    # with no way to authenticate at all (no token, no SSO, no database) it is hidden.
     monkeypatch.setattr(config, "ADMIN_API_TOKEN", "")
+    assert client.get("/admin/v1/orgs", headers=ADMIN).status_code == 401
+    db.init_engine("")
     assert client.get("/admin/v1/orgs", headers=ADMIN).status_code == 404
 
 

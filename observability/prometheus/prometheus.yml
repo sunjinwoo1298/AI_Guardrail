@@ -16,3 +16,4 @@ scrape_configs:
 
 rule_files:
   - /etc/prometheus/alerts.yml
+  - /etc/prometheus/slo_rules.yml

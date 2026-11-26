@@ -108,6 +108,9 @@ async def guard_scan(request: Request, body: GuardScanRequest):
         injection = {"detected": False, "signals": 0}
 
     record_guardrail_decision(decision.action, surface="guard")
+    from app.control import metering
+
+    metering.record(guard_scans=1)
     sm._audit_decision(request, decision, risk, pii, policy)
     return JSONResponse(
         headers={"x-guardrail-action": decision.action},

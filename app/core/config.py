@@ -231,6 +231,29 @@ AUDIT_ENABLED = os.getenv("AUDIT_ENABLED", "true").lower() == "true"
 AUDIT_LOG_ALLOWED_REQUESTS = os.getenv("AUDIT_LOG_ALLOWED_REQUESTS", "false").lower() == "true"
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "90"))
 
+# ---------------------------------------------------------------------------
+# Enterprise (Phase 3): admin SSO / RBAC, metering, webhooks, SIEM
+# ---------------------------------------------------------------------------
+# OpenID Connect single sign-on for the admin API. Users present their IdP-issued JWT
+# (Authorization: Bearer <jwt>); their e-mail is matched to org memberships.
+OIDC_ISSUER = os.getenv("OIDC_ISSUER", "").strip().rstrip("/")
+OIDC_AUDIENCE = os.getenv("OIDC_AUDIENCE", "").strip()
+# Optional; discovered from <issuer>/.well-known/openid-configuration when empty.
+OIDC_JWKS_URL = os.getenv("OIDC_JWKS_URL", "").strip()
+OIDC_EMAIL_CLAIM = os.getenv("OIDC_EMAIL_CLAIM", "email")
+OIDC_REQUIRE_EMAIL_VERIFIED = os.getenv("OIDC_REQUIRE_EMAIL_VERIFIED", "true").lower() == "true"
+OIDC_ALGORITHMS = [a.strip() for a in os.getenv("OIDC_ALGORITHMS", "RS256,ES256").split(",") if a.strip()]
+# E-mails (SSO) with platform-wide admin rights.
+PLATFORM_ADMIN_EMAILS = frozenset(e.strip().lower() for e in os.getenv("PLATFORM_ADMIN_EMAILS", "").split(",") if e.strip())
+ADMIN_TOKEN_PREFIX = os.getenv("ADMIN_TOKEN_PREFIX", "gpa")
+# Usage counters are aggregated in memory and written to usage_daily this often.
+USAGE_FLUSH_SECONDS = float(os.getenv("USAGE_FLUSH_SECONDS", "10"))
+# Operator-wide SIEM feed: every audit event from every org, signed with the secret.
+AUDIT_SIEM_WEBHOOK_URL = os.getenv("AUDIT_SIEM_WEBHOOK_URL", "").strip()
+AUDIT_SIEM_WEBHOOK_SECRET = os.getenv("AUDIT_SIEM_WEBHOOK_SECRET", "").strip()
+# Allow webhook / MCP targets on private networks (local development only).
+WEBHOOK_ALLOW_PRIVATE_TARGETS = os.getenv("WEBHOOK_ALLOW_PRIVATE_TARGETS", "false").lower() == "true"
+
 
 def validate_settings():
     errors = []
@@ -330,6 +353,15 @@ def validate_settings():
         problem = validate_keys(PROVIDER_KEY_ENCRYPTION_KEYS)
         if problem:
             errors.append(problem)
+
+    if bool(OIDC_ISSUER) != bool(OIDC_AUDIENCE):
+        errors.append("OIDC_ISSUER and OIDC_AUDIENCE must be set together")
+    if OIDC_ISSUER and not OIDC_ISSUER.startswith("https://") and IS_PRODUCTION:
+        errors.append("OIDC_ISSUER must be an https URL in production")
+    if AUDIT_SIEM_WEBHOOK_URL and len(AUDIT_SIEM_WEBHOOK_SECRET) < 16:
+        errors.append("AUDIT_SIEM_WEBHOOK_SECRET (16+ characters) is required with AUDIT_SIEM_WEBHOOK_URL")
+    if IS_PRODUCTION and WEBHOOK_ALLOW_PRIVATE_TARGETS:
+        errors.append("WEBHOOK_ALLOW_PRIVATE_TARGETS must not be enabled in production")
 
     if IS_PRODUCTION and DATABASE_URL:
         if KEY_HASH_SECRET == DEV_KEY_HASH_SECRET or len(KEY_HASH_SECRET) < 32:

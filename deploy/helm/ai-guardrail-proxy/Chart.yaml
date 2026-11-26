@@ -1,0 +1,7 @@
+apiVersion: v2
+name: ai-guardrail-proxy
+description: Security gateway for LLM applications (prompt-injection and PII guardrails, multi-tenant control plane)
+type: application
+version: 0.3.0
+appVersion: "1.0.0"
+keywords: [llm, guardrails, ai-gateway, security]

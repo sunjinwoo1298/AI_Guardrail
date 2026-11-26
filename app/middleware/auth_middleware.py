@@ -28,6 +28,29 @@ def _error(status: int, code: str, message: str, kind: str, headers=None) -> JSO
                         content={"error": {"message": message, "type": kind, "code": code}})
 
 
+# Paths that call a model and therefore spend budget (guard scans do not).
+_MODEL_PATHS = ("/generate", "/stream", "/v1/chat/completions", "/v1/messages", "/v1/responses")
+
+
+async def _budget_exceeded():
+    """429 budget_exceeded when the app's monthly budget is used up (action "block")."""
+    from app.control import metering
+
+    try:
+        status = await asyncio.to_thread(metering.check_budget)
+    except Exception as exc:
+        logger.warning(f"Budget check unavailable: {exc!r}")
+        return None
+    if status is None or not status["exceeded"]:
+        return None
+    if status["action"] != "block":
+        logger.warning("Monthly budget exceeded (flag only): %s", ",".join(status["exceeded"]))
+        return None
+    return JSONResponse(status_code=429, content={"error": {
+        "message": f"Monthly budget exceeded ({', '.join(status['exceeded'])}) for {status['month']}",
+        "type": "insufficient_quota", "code": "budget_exceeded", "budget": status}})
+
+
 def _too_large(size: int) -> JSONResponse:
     return JSONResponse(status_code=413, content={"error": {
         "message": f"Request body too large: {size} bytes (limit {MAX_REQUEST_BODY_BYTES})",
@@ -120,6 +143,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
             request.state.rate_limit = rate_limit
             request.state.reserved_tokens = estimated_tokens
+            if request.url.path.startswith(_MODEL_PATHS) and request.method == "POST":
+                exceeded = await _budget_exceeded()
+                if exceeded is not None:
+                    return exceeded
             if not rate_limit.allowed and rate_limit.reason == UNAVAILABLE_REASON:
                 logger.error("Rate limiter unavailable and RATE_LIMIT_FAIL_MODE=closed; rejecting request")
                 return JSONResponse(

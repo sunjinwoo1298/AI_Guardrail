@@ -221,6 +221,31 @@ class ModerationPolicy(_Strict):
         return cleaned
 
 
+class BudgetPolicy(_Strict):
+    """Monthly spend / token caps (UTC calendar month) for the project.
+
+    ``block`` refuses model calls with 429 ``budget_exceeded`` once a cap is reached;
+    ``flag`` only records it. Crossing each of ``alert_thresholds`` (fractions of a cap)
+    emits one ``budget.threshold`` event per month (audit log and webhooks).
+    """
+
+    monthly_usd: Optional[float] = Field(default=None, gt=0)
+    monthly_tokens: Optional[int] = Field(default=None, gt=0)
+    action: Literal["block", "flag"] = "block"
+    alert_thresholds: List[float] = Field(default_factory=lambda: [0.8, 1.0], max_length=10)
+
+    @field_validator("alert_thresholds")
+    @classmethod
+    def _thresholds(cls, value):
+        if any(not 0 < t <= 1.0 for t in value):
+            raise ValueError("alert_thresholds must be fractions in (0, 1]")
+        return sorted(set(value))
+
+    @property
+    def active(self) -> bool:
+        return self.monthly_usd is not None or self.monthly_tokens is not None
+
+
 class McpServer(_Strict):
     name: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9-]*$")
     url: str = Field(min_length=8, max_length=500)
@@ -267,6 +292,7 @@ class Policy(_Strict):
     multimodal: MultimodalPolicy = Field(default_factory=MultimodalPolicy)
     moderation: ModerationPolicy = Field(default_factory=ModerationPolicy)
     mcp_servers: List[McpServer] = Field(default_factory=list, max_length=50)
+    budget: BudgetPolicy = Field(default_factory=BudgetPolicy)
 
     @model_validator(mode="after")
     def _unique_mcp_names(self):

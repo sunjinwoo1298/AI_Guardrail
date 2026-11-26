@@ -19,6 +19,39 @@ jobs:
       - name: Run unit and integration tests
         run: pytest -q
 
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Audit Python dependencies for known vulnerabilities
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt --progress-spinner off
+      - name: Build the image
+        run: docker build -t ai-guardrail-proxy:ci .
+      - name: Scan the image (fail on fixable critical / high)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ai-guardrail-proxy:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint and render the chart
+        run: |
+          helm lint deploy/helm/ai-guardrail-proxy
+          helm template guardrail deploy/helm/ai-guardrail-proxy \
+            --set secrets.existingSecret=guardrail-secrets \
+            --set ingress.enabled=true --set metrics.serviceMonitor.enabled=true > /dev/null
+
   load-test:
     runs-on: ubuntu-latest
     needs: test

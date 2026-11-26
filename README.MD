@@ -17,6 +17,7 @@
 - [Per-app keys and policies](#per-app-keys-and-policies)
 - [Multi-tenant control plane](#multi-tenant-control-plane)
 - [Agent security](#agent-security)
+- [Enterprise operations](#enterprise-operations)
 - [Providers and models](#providers-and-models)
 - [Security model](#security-model)
 - [Observability](#observability)
@@ -304,7 +305,7 @@ Every response carries `x-guardrail-action` (`allow`, `flag`, `would_block`), pl
 | `PUT/GET/DELETE /admin/v1/orgs/{org}/provider-keys…` | Bring-your-own provider keys |
 | `GET /admin/v1/audit`, `GET /admin/v1/audit/verify`, `POST /admin/v1/audit/purge` | Audit log |
 
-The admin API is authenticated with the single `ADMIN_API_TOKEN` and meant for the operator's own tooling. Per-user admin accounts with SSO and roles come later.
+Admin access, roles, SSO, metering, budgets and webhooks are covered in [Enterprise operations](#enterprise-operations).
 
 ## Agent security
 
@@ -347,6 +348,40 @@ Agents read untrusted content, call tools and loop without a person checking eac
 - `tools/call` and `resources/read` results are scanned for prompt injection (a blocked result is replaced with an error result) and have PII masked.
 - Upstream credentials are not stored; the client sends them in `X-MCP-Authorization`.
 - Only public HTTPS addresses are contacted (SSRF protection). Set `MCP_ALLOW_PRIVATE_UPSTREAMS=true` for local development.
+
+## Enterprise operations
+
+**Admin access: roles and single sign-on.** Customers manage their own organization; the operator manages the platform.
+
+| Principal | How it authenticates | Use |
+|---|---|---|
+| SSO user | `Authorization: Bearer <OIDC JWT>` from your identity provider (`OIDC_ISSUER`, `OIDC_AUDIENCE`); signature, issuer, audience, expiry and `email_verified` are checked; the e-mail is matched to org memberships | People, through a console or CLI |
+| Admin token `gpa_…` | Hashed like API keys, bound to one org and role (or platform-wide), expiring and revocable | CI, Terraform, the customer's automation |
+| `ADMIN_API_TOKEN` | Bootstrap platform token | First setup and break-glass access only |
+
+Roles per organization: `viewer` (read everything), `admin` (+ projects, keys, policies, provider keys, webhooks) and `owner` (+ members and admin tokens). A token can't be created with more rights than its creator has, and an org always keeps at least one owner. Platform admins (`PLATFORM_ADMIN_EMAILS`, platform tokens) also create and suspend organizations, see every tenant's usage and verify or purge the audit log. Another organization's resources answer `404`, so names can't be probed. Every admin action is audited with its actor (`user:alice@acme.com`, `token:gpa_…`).
+
+**Metering and budgets.** Requests, blocks, flags, cache hits, guard scans, tokens and cost are counted per project per UTC day (`usage_daily`, written in batches, safe across replicas), and month-to-date totals are kept in Redis. A project's policy can cap spend:
+
+```json
+{"budget": {"monthly_usd": 500, "monthly_tokens": 50000000, "action": "block", "alert_thresholds": [0.5, 0.8, 1.0]}}
+```
+
+At the cap, model calls get `429 budget_exceeded` (guard scans keep working). Each threshold crossed emits one `budget.threshold` event per month. Usage endpoints: `GET /admin/v1/orgs/{org}/usage`, `…/usage.csv` (billing export), `GET /admin/v1/projects/{id}/budget`, and `GET /admin/v1/usage` for the platform.
+
+**Webhooks and SIEM.**
+- `POST /admin/v1/orgs/{org}/webhooks` with an HTTPS URL and event patterns (`request.block`, `admin.*`, `budget.*`). The signing secret is returned once.
+- Each delivery carries `X-Guardrail-Signature: t=<unix>,v1=<HMAC-SHA256(secret, "<t>.<body>")>`; reject old timestamps to stop replays. `app/control/webhooks.verify_signature` is the reference implementation.
+- Failed deliveries are retried (1 s, 5 s, 30 s); a webhook is disabled after 20 failed events.
+- Targets must be public HTTPS (SSRF protection).
+- Operators can send **every** org's audit events to their SIEM with `AUDIT_SIEM_WEBHOOK_URL` and `AUDIT_SIEM_WEBHOOK_SECRET`, or pull them as NDJSON with `GET /admin/v1/orgs/{org}/audit/export?after=<cursor>` (or `/admin/v1/audit/export`), passing back the `X-Next-Cursor` header.
+
+**Deployment, SLOs and compliance.**
+- Kubernetes: Helm chart in [`deploy/helm/ai-guardrail-proxy`](deploy/helm/ai-guardrail-proxy). It runs migrations as a pre-upgrade job, sets readiness on `/ready`, and includes an HPA, PDB, NetworkPolicy, ServiceMonitor, a non-root read-only container and topology spread.
+- SLOs: 99.9% availability and a guard-latency SLO, with multi-window burn-rate alerts, in [`observability/prometheus/slo_rules.yml`](observability/prometheus/slo_rules.yml); see [docs/SLA.md](docs/SLA.md).
+- [docs/SECURITY.md](docs/SECURITY.md), [docs/DATA_HANDLING.md](docs/DATA_HANDLING.md), [docs/OPERATIONS.md](docs/OPERATIONS.md) and [docs/compliance/SOC2_READINESS.md](docs/compliance/SOC2_READINESS.md) (a control mapping, not an attestation).
+- CI runs the tests, pip-audit, a Trivy image scan and `helm lint` / `helm template`.
+- Independent detection numbers: `python load_test/benchmark.py --file <public dataset> --text-field text --label-field label --positive 1` reports precision, recall, F1 and false-positive rate on any labelled CSV or JSONL (for example `deepset/prompt-injections`).
 
 ## Providers and models
 
@@ -407,7 +442,7 @@ Model names are `<provider>/<model>`:
 | `POST` | `/v1/messages` | Anthropic Messages API, guarded (streaming supported) |
 | `POST` | `/v1/responses` | OpenAI Responses API, guarded (streaming supported) |
 | `POST/GET/DELETE` | `/mcp/{name}` | MCP gateway (Streamable HTTP) to a server in the project's `mcp_servers` |
-| `*` | `/admin/v1/...` | Control-plane admin API (see [Multi-tenant control plane](#multi-tenant-control-plane)) |
+| `*` | `/admin/v1/...` | Admin API: orgs, members, admin tokens, projects, keys, policies, provider keys, webhooks, usage, audit (see [Multi-tenant control plane](#multi-tenant-control-plane) and [Enterprise operations](#enterprise-operations)) |
 | `GET` | `/health`, `/ready` | Liveness and readiness |
 | `GET` | `/metrics` | Prometheus metrics |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
@@ -485,7 +520,7 @@ Run the console against it:
 cd frontend && npm install && npm run dev
 ```
 
-Run the test suite (240 tests; no network access needed):
+Run the test suite (272 tests; no network access needed):
 
 ```bash
 python -m pytest -q
@@ -628,9 +663,12 @@ app/
   security/       PII detection, injection tripwires + classifier (+ optional verifier), risk engine, sanitizer, rate limiter
   services/       Orchestrator (cache -> model -> redaction), Redis + ChromaDB cache
 frontend/         React console (Vite), served by nginx in Docker
-observability/    Prometheus, alert rules, Grafana provisioning + dashboard, OTel collector
+observability/    Prometheus, alert and SLO rules, Grafana provisioning + dashboard, OTel collector
+deploy/helm/      Helm chart for Kubernetes
+migrations/       Alembic schema migrations for the control plane
+docs/             SLA, security, data handling, operations runbook, SOC 2 readiness
 docs/screenshots/ Images used in this README
-load_test/        Locust load test, security evaluation, and their results
+load_test/        Locust load test, security evaluation, public-dataset benchmark harness
 tests/            Unit, integration and red-team tests
 ```
 

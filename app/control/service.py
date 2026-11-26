@@ -366,3 +366,155 @@ def delete_credential(org_ref: str, credential_id: str, actor: str) -> None:
         org_id = org.id
     bump_version()
     audit.record("admin.provider_key_deleted", actor=actor, org_id=org_id, project_id=project_id, details=details)
+
+
+# --- members (SSO users) and admin tokens ------------------------------------------------------
+
+def _role(role: str) -> str:
+    from app.control.rbac import ROLES
+
+    if role not in ROLES:
+        raise Invalid(f"role must be one of {list(ROLES)}")
+    return role
+
+
+def member_out(row) -> dict:
+    return {"id": row.id, "org_id": row.org_id, "email": row.email, "role": row.role,
+            "created_at": _iso(row.created_at), "created_by": row.created_by}
+
+
+def add_member(org_ref: str, email: str, role: str, actor: str) -> dict:
+    from app.control.models import OrgMember
+
+    email = (email or "").strip().lower()
+    if "@" not in email or len(email) > 320:
+        raise Invalid("email must be an e-mail address")
+    try:
+        with db.session_scope() as session:
+            org = _org(session, org_ref)
+            row = OrgMember(org_id=org.id, email=email, role=_role(role), created_by=actor)
+            session.add(row)
+            session.flush()
+            out = member_out(row)
+    except IntegrityError as exc:
+        raise Conflict(f"{email} is already a member") from exc
+    audit.record("admin.member_added", actor=actor, org_id=out["org_id"], details={"email": email, "role": role})
+    return out
+
+
+def list_members(org_ref: str) -> List[dict]:
+    from app.control.models import OrgMember
+
+    with db.session_scope() as session:
+        org = _org(session, org_ref)
+        rows = session.execute(select(OrgMember).where(OrgMember.org_id == org.id).order_by(OrgMember.email)).scalars()
+        return [member_out(r) for r in rows]
+
+
+def _member(session, org_id: str, email: str):
+    from app.control.models import OrgMember
+
+    row = session.execute(select(OrgMember).where(OrgMember.org_id == org_id,
+                                                  OrgMember.email == email.strip().lower())).scalar_one_or_none()
+    if row is None:
+        raise NotFound(f"member '{email}' not found")
+    return row
+
+
+def _guard_last_owner(session, org_id: str, row, new_role: Optional[str]) -> None:
+    """An organization must keep at least one owner (removal or demotion)."""
+    from app.control.models import OrgMember
+
+    if row.role != "owner" or new_role == "owner":
+        return
+    owners = session.execute(select(func.count()).select_from(OrgMember).where(
+        OrgMember.org_id == org_id, OrgMember.role == "owner")).scalar()
+    if owners <= 1:
+        raise Conflict("an organization must keep at least one owner")
+
+
+def set_member_role(org_ref: str, email: str, role: str, actor: str) -> dict:
+    with db.session_scope() as session:
+        org = _org(session, org_ref)
+        row = _member(session, org.id, email)
+        _guard_last_owner(session, org.id, row, _role(role))
+        row.role = role
+        out = member_out(row)
+    audit.record("admin.member_role_changed", actor=actor, org_id=out["org_id"],
+                 details={"email": out["email"], "role": role})
+    return out
+
+
+def remove_member(org_ref: str, email: str, actor: str) -> None:
+    with db.session_scope() as session:
+        org = _org(session, org_ref)
+        row = _member(session, org.id, email)
+        _guard_last_owner(session, org.id, row, None)
+        session.delete(row)
+        org_id = org.id
+    audit.record("admin.member_removed", actor=actor, org_id=org_id, details={"email": email.strip().lower()})
+
+
+def admin_token_out(row) -> dict:
+    return {"id": row.id, "org_id": row.org_id, "name": row.name, "role": row.role, "prefix": row.prefix,
+            "created_at": _iso(row.created_at), "created_by": row.created_by, "expires_at": _iso(row.expires_at),
+            "revoked_at": _iso(row.revoked_at), "last_used_at": _iso(row.last_used_at),
+            "active": row.revoked_at is None}
+
+
+def create_admin_token(org_ref: Optional[str], name: str, role: str, actor: str,
+                       expires_in_days: Optional[int] = None) -> dict:
+    """org_ref None creates a platform-wide token (role is then "platform")."""
+    from app.control.models import AdminToken
+    from app.control.rbac import generate_admin_token, hash_admin_token
+
+    plaintext = generate_admin_token()
+    with db.session_scope() as session:
+        org_id = _org(session, org_ref).id if org_ref is not None else None
+        row = AdminToken(org_id=org_id, name=(name or "token")[:100],
+                         role="platform" if org_id is None else _role(role),
+                         token_hash=hash_admin_token(plaintext), prefix=plaintext[:12], created_by=actor,
+                         expires_at=utcnow() + timedelta(days=expires_in_days) if expires_in_days else None)
+        session.add(row)
+        session.flush()
+        out = admin_token_out(row)
+    audit.record("admin.admin_token_created", actor=actor, org_id=org_id,
+                 details={"token_id": out["id"], "role": out["role"], "prefix": out["prefix"]})
+    return dict(out, token=plaintext)
+
+
+def list_admin_tokens(org_ref: Optional[str]) -> List[dict]:
+    from app.control.models import AdminToken
+
+    with db.session_scope() as session:
+        stmt = select(AdminToken).order_by(AdminToken.created_at)
+        if org_ref is not None:
+            stmt = stmt.where(AdminToken.org_id == _org(session, org_ref).id)
+        else:
+            stmt = stmt.where(AdminToken.org_id.is_(None))
+        return [admin_token_out(r) for r in session.execute(stmt).scalars()]
+
+
+def revoke_admin_token(org_ref: Optional[str], token_id: str, actor: str) -> dict:
+    from app.control.models import AdminToken
+
+    with db.session_scope() as session:
+        row = session.get(AdminToken, token_id)
+        org_id = _org(session, org_ref).id if org_ref is not None else None
+        if row is None or row.org_id != org_id:
+            raise NotFound(f"admin token '{token_id}' not found")
+        if row.revoked_at is None:
+            row.revoked_at = utcnow()
+        out = admin_token_out(row)
+    audit.record("admin.admin_token_revoked", actor=actor, org_id=org_id, details={"token_id": token_id})
+    return out
+
+
+def project_org_id(project_id: str) -> str:
+    with db.session_scope() as session:
+        return _project(session, project_id).org_id
+
+
+def org_id_for(org_ref: str) -> str:
+    with db.session_scope() as session:
+        return _org(session, org_ref).id

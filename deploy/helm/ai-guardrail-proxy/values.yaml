@@ -1,0 +1,109 @@
+# Default values for ai-guardrail-proxy.
+#
+# Postgres and Redis are external: point the chart at managed services (RDS / Cloud SQL,
+# ElastiCache / Memorystore) or at in-cluster releases you operate separately.
+
+image:
+  repository: ghcr.io/your-org/ai-guardrail-proxy
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 3
+# Each pod runs ONE uvicorn worker (Prometheus counters are per process); scale with replicas.
+resources:
+  requests: {cpu: "1", memory: 2Gi}
+  limits: {memory: 3Gi}
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 65
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Non-secret settings (become environment variables).
+config:
+  ENVIRONMENT: production
+  DEFAULT_PROVIDER: groq
+  RATE_LIMIT_FAIL_MODE: closed
+  AUDIT_RETENTION_DAYS: "90"
+  SECURITY_SCAN_THREADS: "4"
+  ONNX_INTRA_OP_THREADS: "1"
+  # OIDC_ISSUER: https://login.example.com
+  # OIDC_AUDIENCE: guardrail-admin
+  # PLATFORM_ADMIN_EMAILS: ops@example.com
+
+# Secrets: reference an existing Secret (recommended, e.g. from External Secrets / Vault)
+# with these keys, or let the chart create one from `secrets.values` (not for production).
+secrets:
+  existingSecret: ""
+  values: {}
+  # Expected keys:
+  #   DATABASE_URL, REDIS_URL, KEY_HASH_SECRET, PROVIDER_KEY_ENCRYPTION_KEYS,
+  #   SYSTEM_PROMPT_CANARY, METRICS_AUTH_TOKEN, ADMIN_API_TOKEN (optional, break-glass),
+  #   GROQ_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY / OPEN_ROUTER_API_KEY,
+  #   AUDIT_SIEM_WEBHOOK_URL / AUDIT_SIEM_WEBHOOK_SECRET (optional)
+
+migrations:
+  # Runs `alembic upgrade head` as a pre-install / pre-upgrade hook.
+  enabled: true
+  backoffLimit: 3
+
+# Model files (~800 MB) are downloaded on first start. Use a ReadWriteMany PVC to share
+# them across pods, or bake them into the image; emptyDir re-downloads per pod.
+modelCache:
+  persistentVolumeClaim: ""
+  sizeLimit: 4Gi
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: guardrail.example.com
+      paths: [{path: /, pathType: Prefix}]
+  tls: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile: {type: RuntimeDefault}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    # Name/key of a Secret holding METRICS_AUTH_TOKEN for scraping.
+    bearerTokenSecret: {name: "", key: METRICS_AUTH_TOKEN}
+
+networkPolicy:
+  enabled: true
+  # Namespaces allowed to reach the proxy (ingress controller, apps). Empty = any.
+  allowedNamespaces: []
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway

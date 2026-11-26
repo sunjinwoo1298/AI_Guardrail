@@ -26,12 +26,16 @@ class Base(DeclarativeBase):
 _engine: Optional[Engine] = None
 _session_factory: Optional[sessionmaker] = None
 _lock = threading.Lock()
+# An in-memory SQLite database is one connection shared by every thread (StaticPool);
+# concurrent use corrupts results, so sessions on it are serialised. Only tests and
+# local experiments use it; file SQLite and Postgres use normal pooling.
+_shared_connection_lock: Optional[threading.RLock] = None
 
 
 def init_engine(url: Optional[str] = None, *, create_tables: Optional[bool] = None) -> Optional[Engine]:
     """(Re)initialise the engine. ``url`` defaults to DATABASE_URL; empty disables the
     control plane. Tests call this with "sqlite://" for an isolated in-memory database."""
-    global _engine, _session_factory
+    global _engine, _session_factory, _shared_connection_lock
     url = config.DATABASE_URL if url is None else url
     with _lock:
         if _engine is not None:
@@ -40,10 +44,12 @@ def init_engine(url: Optional[str] = None, *, create_tables: Optional[bool] = No
         if not url:
             return None
         kwargs = {"future": True}
+        _shared_connection_lock = None
         if url.startswith("sqlite"):
             kwargs["connect_args"] = {"check_same_thread": False}
             if url in ("sqlite://", "sqlite:///:memory:"):
                 kwargs["poolclass"] = StaticPool  # one shared in-memory database
+                _shared_connection_lock = threading.RLock()
         else:
             kwargs.update(pool_pre_ping=True, pool_size=10, max_overflow=20, pool_recycle=1800)
         engine = create_engine(url, **kwargs)
@@ -69,6 +75,9 @@ def enabled() -> bool:
 def session_scope() -> Iterator[Session]:
     if _session_factory is None:
         raise RuntimeError("Control plane database is not configured (DATABASE_URL)")
+    guard = _shared_connection_lock
+    if guard is not None:
+        guard.acquire()
     session = _session_factory()
     try:
         yield session
@@ -78,15 +87,23 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
+        if guard is not None:
+            guard.release()
 
 
 def ping() -> bool:
     if _engine is None:
         return False
+    guard = _shared_connection_lock
     try:
+        if guard is not None:
+            guard.acquire()
         with _engine.connect() as connection:
             connection.exec_driver_sql("SELECT 1")
         return True
     except Exception as exc:
         logger.warning(f"Control plane database unavailable: {exc}")
         return False
+    finally:
+        if guard is not None:
+            guard.release()

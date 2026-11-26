@@ -133,3 +133,82 @@ class AuditEvent(Base):
     prev_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     hash: Mapped[str] = mapped_column(String(64), nullable=False)
     monitor: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+# --- Phase 3: admin access, metering, webhooks ------------------------------------------------
+
+class OrgMember(Base):
+    """A person (identified by the e-mail in their SSO token) with a role in one org."""
+
+    __tablename__ = "org_members"
+    __table_args__ = (UniqueConstraint("org_id", "email", name="uq_org_member_email"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    # owner | admin | viewer
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False, default="admin")
+
+
+class AdminToken(Base):
+    """A service-account credential for the admin API (CI, Terraform, the customer's own
+    tooling). Hashed like API keys; org_id NULL means a platform-wide token."""
+
+    __tablename__ = "admin_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    org_id: Mapped[Optional[str]] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    prefix: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False, default="admin")
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UsageDaily(Base):
+    """Usage per app and UTC day: the basis for billing exports and usage dashboards.
+    ``subject`` is the project id for control-plane tenants, or "env:<app>"."""
+
+    __tablename__ = "usage_daily"
+    __table_args__ = (UniqueConstraint("subject", "day", name="uq_usage_subject_day"),
+                      Index("ix_usage_org_day", "org_id", "day"))
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    subject: Mapped[str] = mapped_column(String(100), nullable=False)
+    org_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    app: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    day: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD (UTC)
+    requests: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    blocked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    flagged: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_hits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    guard_scans: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class Webhook(Base):
+    """An org's HTTPS endpoint receiving signed audit / budget events."""
+
+    __tablename__ = "webhooks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    url: Mapped[str] = mapped_column(String(500), nullable=False)
+    # fnmatch patterns over event types, e.g. ["request.block", "admin.*", "budget.*"]
+    event_types: Mapped[list] = mapped_column(JSON, nullable=False)
+    secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_delivery_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

@@ -1,0 +1,8 @@
+AI Guardrail Proxy {{ .Chart.AppVersion }} is installed as {{ include "agp.fullname" . }}.
+
+1. Schema migrations ran in the "{{ include "agp.fullname" . }}-migrate-{{ .Release.Revision }}" job.
+2. /ready stays 503 until the models are loaded and Postgres / Redis are reachable:
+     kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
+3. Create the first organization, project and key (once):
+     kubectl exec deploy/{{ include "agp.fullname" . }} -- python -m app.control.cli bootstrap --org <org> --project <project>
+4. Point applications at http://{{ include "agp.fullname" . }}:{{ .Values.service.port }}/v1 with their gpk_ key.
