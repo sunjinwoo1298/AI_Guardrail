@@ -8,6 +8,9 @@ from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
 
 from app.api.admin import router as admin_router
+from app.api.anthropic_native import router as anthropic_router
+from app.api.mcp_gateway import router as mcp_router
+from app.api.responses_native import router as responses_router
 from app.api.guard import router as guard_router
 from app.api.routes import router
 from app.core.config import (
@@ -108,6 +111,9 @@ app.add_middleware(AuthMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.include_router(router)
 app.include_router(guard_router)
+app.include_router(anthropic_router)
+app.include_router(responses_router)
+app.include_router(mcp_router)
 app.include_router(admin_router)
 
 

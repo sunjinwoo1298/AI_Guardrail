@@ -30,7 +30,31 @@ from app.observability.metrics import (
 )
 from app.security.prompt_guard import detect_prompt_injection
 from app.security.risk_engine import calculate_risk_score, should_block_prompt
+from app.security import moderation, session_risk
+from app.security.agent_guard import check_declared_tools
 from app.security.decision import Decision, decide, deny_hits, masks_pii
+from app.security.session_risk import session_id_from
+
+# Content-part types that carry media the scanners cannot read (no OCR / ASR).
+_MEDIA_PART_TYPES = {"image_url": "image", "image": "image", "input_image": "image", "input_audio": "audio",
+                     "audio": "audio", "file": "file", "input_file": "file", "document": "file"}
+
+
+def media_types(messages) -> list:
+    """Media kinds in untrusted messages (policy.multimodal decides what happens to them)."""
+    found = []
+    for msg in messages if isinstance(messages, list) else []:
+        if not isinstance(msg, dict) or msg.get("role") not in _UNTRUSTED_ROLES:
+            continue
+        content = msg.get("content")
+        for part in content if isinstance(content, list) else []:
+            if isinstance(part, dict) and part.get("type") in _MEDIA_PART_TYPES:
+                kind = _MEDIA_PART_TYPES[part["type"]]
+                if part.get("type") == "document" and (part.get("source") or {}).get("type") == "text":
+                    continue  # plain-text documents are scanned as text
+                if kind not in found:
+                    found.append(kind)
+    return found
 from app.security.sanitizer import canonical_type, sanitize_text
 
 
@@ -277,8 +301,23 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 injection_blocked = should_block_prompt(risk_score, injection_detections)
             else:
                 injection_blocked = should_block_prompt(risk_score, injection_detections, max_risk_score=float(app_threshold))
+            session_id = session_id_from(request.headers, payload)
+            extra_blocks, extra_flags = [], []
+            if session_risk.is_locked(policy, session_id):
+                extra_blocks.append("session_locked")
+            if moderation.wants(policy, "input") and untrusted_texts:
+                verdict = await moderation.moderate([{"role": "user", "content": untrusted_texts[-1]}])
+                mod_blocks, mod_flags = moderation.verdict_reasons(policy, verdict)
+                extra_blocks += mod_blocks
+                extra_flags += mod_flags
             decision = decide(policy, injection_blocked=injection_blocked, injection_signals=injection_detections,
-                              pii_detections=pii_detections, deny=deny_hits(policy, untrusted_texts))
+                              pii_detections=pii_detections, deny=deny_hits(policy, untrusted_texts),
+                              tool_reasons=check_declared_tools(policy, payload.get("tools") or payload.get("functions")),
+                              media_types=media_types(payload.get("messages")),
+                              extra_blocks=extra_blocks, extra_flags=extra_flags)
+            if decision.action != "allow" and decision.reasons != ["session_locked"]:
+                if session_risk.record_event(policy, session_id):
+                    logger.warning("Session locked after repeated guardrail events")
             blocked = decision.blocked
 
             tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None

@@ -45,11 +45,26 @@ def relevant_pii(policy: Policy, pii_detections: list) -> List[str]:
 
 
 def decide(policy: Policy, *, injection_blocked: bool, injection_signals: list, pii_detections: list,
-           deny: Optional[List[tuple]] = None) -> Decision:
+           deny: Optional[List[tuple]] = None, tool_reasons: Optional[List[str]] = None,
+           media_types: Optional[List[str]] = None, extra_blocks: Optional[List[str]] = None,
+           extra_flags: Optional[List[str]] = None) -> Decision:
     """``injection_blocked`` is the risk engine's verdict (tripwires, classifier and risk
-    threshold); this function applies the policy's actions and mode on top of it."""
-    blocks: List[str] = []
-    flags: List[str] = []
+    threshold); this function applies the policy's actions and mode on top of it.
+
+    ``tool_reasons``: declared tools the policy forbids (policy.tools.action applies).
+    ``media_types``: unscanned image / audio / file parts (policy.multimodal.action).
+    ``extra_blocks`` / ``extra_flags``: verdicts already resolved to an action
+    (session lock-out, moderation).
+    """
+    blocks: List[str] = list(extra_blocks or [])
+    flags: List[str] = list(extra_flags or [])
+
+    if tool_reasons and policy.tools.action != "off":
+        (blocks if policy.tools.action == "block" else flags).extend(tool_reasons)
+
+    if media_types and policy.multimodal.action != "allow":
+        reason = "unscanned_media:" + ",".join(sorted(set(media_types)))
+        (blocks if policy.multimodal.action == "block" else flags).append(reason)
 
     if injection_blocked:
         reason = "prompt_injection" if injection_signals else "risk_score"
@@ -74,6 +89,16 @@ def decide(policy: Policy, *, injection_blocked: bool, injection_signals: list, 
     if flags:
         return Decision("flag", [], flags)
     return Decision()
+
+
+def output_decision(policy: Policy, reasons: List[str], setting: str) -> Decision:
+    """Decision for findings in model output; ``setting`` is the detector's policy action
+    ("block" / "flag" / "off")."""
+    if not reasons or setting == "off":
+        return Decision()
+    if setting == "block":
+        return Decision("would_block" if policy.mode == "monitor" else "block", list(reasons))
+    return Decision("flag", [], list(reasons))
 
 
 def masks_pii(policy: Policy) -> bool:

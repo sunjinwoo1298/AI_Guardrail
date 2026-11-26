@@ -243,6 +243,6 @@ def required_scope(path: str) -> Optional[str]:
         return "guard"
     if path.startswith("/v1/models"):
         return "models"
-    if path.startswith(("/v1/chat/completions", "/generate", "/stream")):
+    if path.startswith(("/v1/chat/completions", "/generate", "/stream", "/v1/messages", "/v1/responses", "/mcp/")):
         return "chat"
     return None

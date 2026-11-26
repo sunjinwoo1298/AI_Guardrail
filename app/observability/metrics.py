@@ -238,3 +238,14 @@ def record_guardrail_decision(action: str, surface: str = "proxy"):
 
 def record_audit_dropped():
     AUDIT_DROPPED_TOTAL.inc()
+
+
+OUTPUT_FINDINGS_TOTAL = Counter(
+    "ai_proxy_output_findings_total",
+    "Findings in model output (exfiltration, tool policy, moderation, canary)",
+    ["app", "kind"],
+)
+
+
+def record_output_finding(kind: str):
+    OUTPUT_FINDINGS_TOTAL.labels(app=app_context.get(), kind=kind).inc()

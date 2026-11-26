@@ -88,6 +88,11 @@ from app.observability.metrics import (
     record_usage_source,
 )
 from app.observability.tracing import trace
+from app.control.policy import policy_for
+from app.core.context import app_context
+from app.security import moderation, output_events
+from app.security.agent_guard import audit_output, check_openai_tool_calls
+from app.security.decision import output_decision
 from app.security.sanitizer import public_security_metadata, sanitize_response, sanitize_tool_calls
 from app.security.rate_limiter import refund_tokens, settle_tokens
 from app.services.cache_service import cache_response, get_exact_cache, search_semantic_cache
@@ -403,7 +408,7 @@ def _reserved_tokens_from_context(security_context: Optional[dict]) -> int:
         return 0
 
 
-async def generate_response(
+async def _generate_response(
     query_or_messages: str | list[dict],
     model: str | None = None,
     security_context: Optional[dict] = None,
@@ -416,6 +421,8 @@ async def generate_response(
 
     messages = prepare_messages(query_or_messages)
     query = extract_cache_query(messages)
+    output_findings = output_events.begin()
+    policy = policy_for(app_context.get())
 
     # Resolve default model if not provided
     active_model = model or "groq/openai/gpt-oss-120b"
@@ -687,6 +694,7 @@ async def generate_response(
 
         # Update content in original completion response
         chat_completion["choices"][0]["message"]["content"] = response_text
+        tool_reasons: list = []
         for index, choice in enumerate(chat_completion.get("choices", [])):
             message = choice.get("message")
             if not isinstance(message, dict):
@@ -696,7 +704,16 @@ async def generate_response(
                 message["content"] = _truncate_response(sanitize_response(message["content"]))
             if REDACT_TOOL_CALL_ARGUMENTS:
                 sanitize_tool_calls(message.get("tool_calls"))
+            tool_reasons.extend(check_openai_tool_calls(policy, message.get("tool_calls")))
             _scrub_reasoning(message)
+
+        tool_verdict = output_decision(policy, tool_reasons, policy.tools.action)
+        audit_output(policy, surface="chat.completions", decision=tool_verdict, findings=output_findings)
+        if tool_verdict.blocked:
+            raise HTTPException(status_code=403, detail={
+                "message": "The model's tool call was blocked by the guardrail policy",
+                "type": "permission_error", "code": "tool_call_blocked", "reasons": tool_verdict.reasons,
+            })
 
         metadata_payload = _build_metadata_payload(
             request_id=request_id,
@@ -732,7 +749,7 @@ async def generate_response(
         })
 
 
-async def stream_response(
+async def _stream_response(
     query_or_messages: str | list[dict],
     model: str | None = None,
     security_context: Optional[dict] = None,
@@ -745,6 +762,8 @@ async def stream_response(
 
     messages = prepare_messages(query_or_messages)
     query = extract_cache_query(messages)
+    output_findings = output_events.begin()
+    policy = policy_for(app_context.get())
 
     active_model = model or "groq/openai/gpt-oss-120b"
     params = clean_params(params)
@@ -1018,7 +1037,7 @@ async def stream_response(
                     pending = _within_limit(redactor.flush())
                     if pending:
                         yield "content", _redacted_chunk(chunk, pending)
-                    if REDACT_TOOL_CALL_ARGUMENTS:
+                    if REDACT_TOOL_CALL_ARGUMENTS or policy.tools.active:
                         # Argument fragments can split a secret across chunks, so collect
                         # the calls and send each one whole, redacted, at the end.
                         _accumulate_tool_calls(tool_call_buffer, delta["tool_calls"])
@@ -1036,13 +1055,23 @@ async def stream_response(
         tail = _within_limit(redactor.flush())
         if tail:
             yield "content", _redacted_chunk(last_chunk or {"object": "chat.completion.chunk", "model": used_model}, tail)
+        tool_verdict = None
         if tool_call_buffer:
             calls = [tool_call_buffer[i] for i in sorted(tool_call_buffer)]
-            sanitize_tool_calls(calls)
-            out = _passthrough_chunk(tool_call_template or last_chunk or {"object": "chat.completion.chunk"})
-            out["choices"][0]["delta"] = {"tool_calls": calls}
-            yield "content", out
-        if finish_chunk is not None:
+            if REDACT_TOOL_CALL_ARGUMENTS:
+                sanitize_tool_calls(calls)
+            tool_verdict = output_decision(policy, check_openai_tool_calls(policy, calls), policy.tools.action)
+            if not tool_verdict.blocked:
+                out = _passthrough_chunk(tool_call_template or last_chunk or {"object": "chat.completion.chunk"})
+                out["choices"][0]["delta"] = {"tool_calls": calls}
+                yield "content", out
+        audit_output(policy, surface="chat.completions.stream", decision=tool_verdict, findings=output_findings)
+        if tool_verdict is not None and tool_verdict.blocked:
+            # Headers are already sent; withhold the calls and end the way OpenAI ends
+            # filtered output, so clients see why the turn stopped.
+            yield "content", _passthrough_chunk(finish_chunk or last_chunk or {"object": "chat.completion.chunk"},
+                                                "content_filter")
+        elif finish_chunk is not None:
             yield "content", _passthrough_chunk(finish_chunk, finish_chunk["choices"][0].get("finish_reason"))
 
         latency = time.time() - start_time
@@ -1125,6 +1154,85 @@ async def stream_response(
             "type": "internal_error",
             "code": "internal_error",
         })
+
+
+# --- output moderation (policy.moderation, opt-in) ---------------------------------------------
+
+_WITHHELD = "[Response withheld by the guardrail policy.]"
+
+
+async def _moderate_output(query_or_messages, response_text: str):
+    """Decision for the model's answer, or None when output moderation is off."""
+    policy = policy_for(app_context.get())
+    if not moderation.wants(policy, "output") or not response_text:
+        return None
+    question = extract_cache_query(prepare_messages(query_or_messages))
+    verdict = await moderation.moderate([{"role": "user", "content": question},
+                                         {"role": "assistant", "content": response_text}])
+    blocks, flags = moderation.verdict_reasons(policy, verdict)
+    decision = output_decision(policy, blocks, "block") if blocks else output_decision(policy, flags, "flag")
+    audit_output(policy, surface="moderation", decision=decision)
+    return decision
+
+
+async def generate_response(
+    query_or_messages: str | list[dict],
+    model: str | None = None,
+    security_context: Optional[dict] = None,
+    params: Optional[dict] = None,
+) -> tuple[dict, dict]:
+    completion, metadata = await _generate_response(query_or_messages, model, security_context, params)
+    if isinstance(metadata, dict) and metadata.get("status") != "degraded":
+        decision = await _moderate_output(query_or_messages, metadata.get("response") or "")
+        if decision is not None and decision.blocked:
+            raise HTTPException(status_code=403, detail={
+                "message": "The model's response was blocked by the guardrail policy",
+                "type": "permission_error", "code": "output_blocked", "reasons": decision.reasons,
+            })
+    return completion, metadata
+
+
+async def stream_response(
+    query_or_messages: str | list[dict],
+    model: str | None = None,
+    security_context: Optional[dict] = None,
+    params: Optional[dict] = None,
+) -> AsyncGenerator[tuple[str, dict], None]:
+    policy = policy_for(app_context.get())
+    inner = _stream_response(query_or_messages, model, security_context, params)
+    if not moderation.wants(policy, "output"):
+        async for event in inner:
+            yield event
+        return
+    if policy.moderation.action != "block":
+        # Flag only: stream normally, judge the full answer afterwards (audited).
+        async for event in inner:
+            if event[0] == "metadata" and event[1].get("status") != "degraded":
+                await _moderate_output(query_or_messages, event[1].get("response") or "")
+            yield event
+        return
+    # Block: hold the whole answer until it has been judged; text already sent to a
+    # client cannot be taken back. This costs time-to-first-token.
+    held, metadata = [], None
+    async for event in inner:
+        if event[0] == "metadata":
+            metadata = event
+        else:
+            held.append(event)
+    if metadata is not None and metadata[1].get("status") != "degraded":
+        decision = await _moderate_output(query_or_messages, metadata[1].get("response") or "")
+        if decision is not None and decision.blocked:
+            template = next((e[1] for e in held), {"object": "chat.completion.chunk"})
+            base = {k: v for k, v in template.items() if k not in ("choices", "usage", "x_groq")}
+            yield "content", {**base, "choices": [{"index": 0, "delta": {"content": _WITHHELD}, "finish_reason": None}]}
+            yield "content", {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "content_filter"}]}
+            yield "metadata", {**metadata[1], "response": _WITHHELD, "guardrail_action": "block",
+                               "guardrail_reasons": decision.reasons}
+            return
+    for event in held:
+        yield event
+    if metadata is not None:
+        yield metadata
 
 
 def uuid_id() -> str:

@@ -16,6 +16,7 @@
 - [Connect your application](#connect-your-application)
 - [Per-app keys and policies](#per-app-keys-and-policies)
 - [Multi-tenant control plane](#multi-tenant-control-plane)
+- [Agent security](#agent-security)
 - [Providers and models](#providers-and-models)
 - [Security model](#security-model)
 - [Observability](#observability)
@@ -305,6 +306,48 @@ Every response carries `x-guardrail-action` (`allow`, `flag`, `would_block`), pl
 
 The admin API is authenticated with the single `ADMIN_API_TOKEN` and meant for the operator's own tooling. Per-user admin accounts with SSO and roles come later.
 
+## Agent security
+
+Agents read untrusted content, call tools and loop without a person checking each step. These policy sections (in `APP_POLICIES` or a control-plane policy) cover what that adds:
+
+```json
+{
+  "tools": {
+    "allowed": ["search_*", "crm_update"],
+    "rules": [{"name": "crm_update",
+               "arguments_schema": {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}}},
+               "deny_argument_patterns": ["drop\\s+table"]}]
+  },
+  "exfiltration": {"action": "strip", "allowed_domains": ["mycompany.com"]},
+  "session": {"enabled": true, "max_events": 3, "window_seconds": 900, "block_seconds": 900},
+  "multimodal": {"action": "flag"},
+  "moderation": {"enabled": true, "direction": "both", "action": "block", "categories": ["S1", "S9", "S11"]},
+  "mcp_servers": [{"name": "crm", "url": "https://mcp.example.com/mcp", "allowed_tools": ["search_*"]}]
+}
+```
+
+| Control | What it does |
+|---|---|
+| **Tool policy** | Tools outside `allowed` are refused when the client declares them and when the model calls them. Each rule can check the call's arguments against a JSON Schema and refuse regex matches. A blocked call returns `403 tool_call_blocked`; in streams the call is withheld and the turn ends with `finish_reason: "content_filter"`. |
+| **Exfiltration** | Model output can leak data when it is rendered: a markdown or HTML image pointing at an outside server loads without a click, so anything in its URL is sent there. Such images are removed (`strip`, the default) or recorded (`flag`). Links with very long queries are reduced to their text. `allowed_domains` are trusted. |
+| **Session escalation** | Every flagged or blocked request counts against its session (`x-guardrail-session` header, or the request's `user` field). After `max_events` in the window, the whole session is refused for `block_seconds`. This catches attackers who try one variant at a time. |
+| **Multimodal** | Images, audio and files are not content-scanned yet (no OCR or speech-to-text). `allow`, `flag` or `block` them. |
+| **Moderation** | Opt-in Llama Guard 4 (on Groq, using the tenant's own Groq key if set) for hazard categories S1–S14, on input, output or both. When `action` is `block`, a stream is held until the answer has been judged. `fail_mode` decides what happens if the moderation model is down. |
+| **MCP gateway** | See below. |
+
+**Native provider APIs.** Agents built on a provider's own SDK can use the proxy without a translation layer, with the same scanning, masking, tool policy and output redaction:
+
+- `POST /v1/messages`: Anthropic Messages API (Anthropic SDK, Claude-based agents). The user's text, `tool_result` blocks and plain-text documents are scanned; `system` and assistant turns are trusted. Streams redact text sentence by sentence and send each `tool_use` block whole once it has been checked. `thinking` blocks are passed through unchanged, because Anthropic checks their signatures in the next turn, but a response whose thinking contains the canary is blocked.
+- `POST /v1/responses`: OpenAI Responses API (OpenAI Agents SDK). User messages and `function_call_output` items are scanned. With `previous_response_id`, earlier turns are stored at OpenAI and only the new input is scanned.
+
+**MCP gateway.** Point an agent at `<proxy>/mcp/<name>` instead of the MCP server listed in the policy's `mcp_servers`:
+
+- `tools/list` hides tools the policy doesn't allow, and removes tools whose descriptions contain injected instructions ("tool poisoning").
+- `tools/call` for a disallowed tool, or with arguments that break the tool rules, is refused with a JSON-RPC error and never reaches the server.
+- `tools/call` and `resources/read` results are scanned for prompt injection (a blocked result is replaced with an error result) and have PII masked.
+- Upstream credentials are not stored; the client sends them in `X-MCP-Authorization`.
+- Only public HTTPS addresses are contacted (SSRF protection). Set `MCP_ALLOW_PRIVATE_UPSTREAMS=true` for local development.
+
 ## Providers and models
 
 Model names are `<provider>/<model>`:
@@ -361,6 +404,9 @@ Model names are `<provider>/<model>`:
 | `POST` | `/generate` | `{"prompt": "..."}`; returns the answer plus guardrail metadata (risk score, PII, cache, cost, tokens) |
 | `POST` | `/stream` | Same as `/generate`, as server-sent events; the last event is `{"__meta": {...}}` |
 | `POST` | `/v1/guard/scan` | Standalone scan, no model call: `{"input": "..."}` or `{"messages": [...]}`, optional `"direction": "output"`; returns `action`, `reasons`, detections and a sanitized copy |
+| `POST` | `/v1/messages` | Anthropic Messages API, guarded (streaming supported) |
+| `POST` | `/v1/responses` | OpenAI Responses API, guarded (streaming supported) |
+| `POST/GET/DELETE` | `/mcp/{name}` | MCP gateway (Streamable HTTP) to a server in the project's `mcp_servers` |
 | `*` | `/admin/v1/...` | Control-plane admin API (see [Multi-tenant control plane](#multi-tenant-control-plane)) |
 | `GET` | `/health`, `/ready` | Liveness and readiness |
 | `GET` | `/metrics` | Prometheus metrics |
@@ -439,7 +485,7 @@ Run the console against it:
 cd frontend && npm install && npm run dev
 ```
 
-Run the test suite (193 tests; no network access needed):
+Run the test suite (240 tests; no network access needed):
 
 ```bash
 python -m pytest -q
@@ -592,7 +638,9 @@ tests/            Unit, integration and red-team tests
 
 - The local injection classifier blocks some harmless command-style prompts (7% false positives on the evaluation set, e.g. "Reply with exactly this text…"). The optional verifier clears most of them but lets real attacks through, so it is off by default.
 - One process serves about 15 requests/second on 8 vCPUs because every request is scanned by an ML model; scale out with more containers.
-- Tool calling is not translated for the native Anthropic and Gemini adapters. Use those models through OpenRouter, or an OpenAI-compatible provider, for agent workloads.
+- Tool calling is not translated for Anthropic and Gemini on `/v1/chat/completions`. For Anthropic agents use `/v1/messages`; for Gemini, use an OpenAI-compatible route (OpenRouter).
+- Images, audio and files are not content-scanned (no OCR or speech-to-text); `multimodal.action` decides what happens to them. The injection classifier is English-only; other languages rely on the multilingual tripwires and the optional Llama Guard moderation.
+- The MCP gateway checks upstream addresses when it connects; it does not yet pin the resolved IP, so DNS rebinding between the check and the connection is possible.
 - Rate limits use fixed one-minute windows.
 - The behaviour risk score is tracked per prompt fingerprint, not per user.
 - Ideas: per-app system-prompt canaries, admin UI for keys and policies, sliding-window limits, output schema validation.

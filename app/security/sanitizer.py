@@ -131,6 +131,17 @@ def sanitize_text(text: str, detections: Optional[List[dict]] = None, skip_types
     return mask_pii(text, detections, skip_types)
 
 
+def _scrub_exfiltration(text: str) -> str:
+    """Neutralise zero-click exfiltration channels (policy.exfiltration) and report them."""
+    from app.control.policy import policy_for
+    from app.security import output_events
+    from app.security.agent_guard import scrub_exfiltration
+
+    scrubbed, reasons = scrub_exfiltration(text, policy_for(app_context.get()))
+    output_events.note(reasons)
+    return scrubbed
+
+
 def _output_pii_settings() -> tuple:
     """(mask output PII?, entity types to leave alone) from the current app's policy."""
     from app.core.config import get_app_policy
@@ -176,6 +187,7 @@ def _redact_plain(text: str) -> str:
         return text
     mask_output, allowed = _output_pii_settings()
     redacted = mask_pii(text, skip_types=allowed) if mask_output else text
+    redacted = _scrub_exfiltration(redacted)
     canaries = get_canaries(app_context.get())
     global_canary = get_system_prompt_canary() or SYSTEM_PROMPT_CANARY
     if global_canary and global_canary not in canaries:

@@ -30,3 +30,5 @@ sqlalchemy>=2.0.30,<3.0
 alembic>=1.13,<2.0
 psycopg2-binary>=2.9.9,<3.0
 cryptography>=42.0,<47.0
+# Agent tool-argument schemas (policy.tools.rules[].arguments_schema)
+jsonschema>=4.20,<5.0

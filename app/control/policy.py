@@ -121,6 +121,129 @@ class CachePolicy(_Strict):
     semantic: bool = True
 
 
+# --- Phase 2: agent-era controls -----------------------------------------------------------
+
+class ToolRule(_Strict):
+    # Tool name or fnmatch pattern ("crm_*").
+    name: str = Field(min_length=1, max_length=100)
+    # JSON Schema (draft 2020-12) the call's arguments must satisfy.
+    arguments_schema: Optional[Dict[str, Any]] = None
+    # Regexes that must not match the serialized arguments (e.g. "DROP\\s+TABLE", "rm -rf").
+    deny_argument_patterns: List[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("deny_argument_patterns")
+    @classmethod
+    def _patterns(cls, value):
+        return [_check_regex(p) for p in value]
+
+    @field_validator("arguments_schema")
+    @classmethod
+    def _schema(cls, value):
+        if value is None:
+            return value
+        try:
+            from jsonschema import Draft202012Validator
+
+            Draft202012Validator.check_schema(value)
+        except ImportError:  # pragma: no cover - jsonschema is a runtime dependency
+            pass
+        except Exception as exc:
+            raise ValueError(f"invalid JSON schema: {getattr(exc, 'message', exc)}") from exc
+        return value
+
+
+class ToolsPolicy(_Strict):
+    """Controls on the tools an agent may declare and the calls the model makes."""
+
+    action: Literal["block", "flag", "off"] = "block"
+    # Tool names / fnmatch patterns that may be declared and called. None = any tool.
+    allowed: Optional[List[str]] = Field(default=None, max_length=500)
+    rules: List[ToolRule] = Field(default_factory=list, max_length=200)
+
+    @property
+    def active(self) -> bool:
+        return self.action != "off" and (self.allowed is not None or bool(self.rules))
+
+
+class ExfiltrationPolicy(_Strict):
+    """Model output that would leak data when rendered: a markdown / HTML image pointing at
+    an outside server loads without a click, so anything in its URL (a summary of the
+    conversation, a secret) is sent to that server."""
+
+    # strip: remove the image / neutralise the link (default); flag: record only; off.
+    action: Literal["strip", "flag", "off"] = "strip"
+    # Domains (and their subdomains) whose images and links are trusted.
+    allowed_domains: List[str] = Field(default_factory=list, max_length=200)
+
+    @field_validator("allowed_domains")
+    @classmethod
+    def _domains(cls, value):
+        return [d.strip().lower().lstrip(".") for d in value if d.strip()]
+
+
+class SessionPolicy(_Strict):
+    """Escalation across an agent session (header x-guardrail-session, or the request's
+    ``user`` field): after ``max_events`` flags / blocks within ``window_seconds`` the
+    session is blocked for ``block_seconds``. Catches attackers probing one variant at a
+    time, which per-request scoring cannot see."""
+
+    enabled: bool = False
+    max_events: int = Field(default=3, ge=1, le=1000)
+    window_seconds: int = Field(default=900, ge=10, le=86400)
+    block_seconds: int = Field(default=900, ge=10, le=86400 * 7)
+
+
+class MultimodalPolicy(_Strict):
+    """Images, audio and files are forwarded without content scanning (no OCR / ASR yet);
+    this decides what to do with them."""
+
+    action: Literal["allow", "flag", "block"] = "allow"
+
+
+class ModerationPolicy(_Strict):
+    """Harmful-content classification with Llama Guard (hazard categories S1-S14)."""
+
+    enabled: bool = False
+    direction: Literal["input", "output", "both"] = "output"
+    action: Literal["block", "flag"] = "block"
+    # Only these categories count (e.g. ["S1", "S10"]); empty = all categories.
+    categories: List[str] = Field(default_factory=list, max_length=20)
+    # When the moderation model is unreachable: open = allow and record, closed = reject.
+    fail_mode: Literal["open", "closed"] = "open"
+
+    @field_validator("categories")
+    @classmethod
+    def _categories(cls, value):
+        cleaned = [c.strip().upper() for c in value if c.strip()]
+        bad = [c for c in cleaned if not re.fullmatch(r"S(?:[1-9]|1[0-4])", c)]
+        if bad:
+            raise ValueError(f"unknown moderation categories {bad}; use S1..S14")
+        return cleaned
+
+
+class McpServer(_Strict):
+    name: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    url: str = Field(min_length=8, max_length=500)
+    # Tools that may be listed and called through the gateway. None = all tools.
+    allowed_tools: Optional[List[str]] = Field(default=None, max_length=500)
+    # Scan tool descriptions for injected instructions ("tool poisoning") and drop them.
+    scan_tool_descriptions: bool = True
+    # Scan tool results for prompt injection and mask PII before they reach the agent.
+    scan_results: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, value):
+        from urllib.parse import urlparse
+
+        parsed = urlparse(value)
+        if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+            raise ValueError("MCP server url must be an http(s) URL")
+        if parsed.username or parsed.password:
+            raise ValueError("MCP server url must not contain credentials; send them per request")
+        return value
+
+
 class Policy(_Strict):
     mode: Literal["enforce", "monitor"] = "enforce"
     rpm: Optional[int] = Field(default=None, gt=0)
@@ -138,6 +261,19 @@ class Policy(_Strict):
     # When false the project must bring its own provider keys (BYOK); requests for a
     # provider it has no key for are rejected instead of using the platform's key.
     allow_platform_provider_keys: bool = True
+    tools: ToolsPolicy = Field(default_factory=ToolsPolicy)
+    exfiltration: ExfiltrationPolicy = Field(default_factory=ExfiltrationPolicy)
+    session: SessionPolicy = Field(default_factory=SessionPolicy)
+    multimodal: MultimodalPolicy = Field(default_factory=MultimodalPolicy)
+    moderation: ModerationPolicy = Field(default_factory=ModerationPolicy)
+    mcp_servers: List[McpServer] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def _unique_mcp_names(self):
+        names = [s.name for s in self.mcp_servers]
+        if len(names) != len(set(names)):
+            raise ValueError("mcp_servers names must be unique")
+        return self
 
     def as_dict(self) -> Dict[str, Any]:
         """Flat view used by get_app_policy(): only explicitly meaningful values, plus the

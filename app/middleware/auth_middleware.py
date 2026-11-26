@@ -47,7 +47,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if content_length.isdigit() and int(content_length) > MAX_REQUEST_BODY_BYTES:
             return _too_large(int(content_length))
 
-        if request.url.path.startswith(("/generate", "/stream", "/v1/")) and REQUIRE_API_KEY:
+        if request.url.path.startswith(("/generate", "/stream", "/v1/", "/mcp/")) and REQUIRE_API_KEY:
             # Accept the proxy key as x-api-key or as "Authorization: Bearer <key>", which
             # is what the OpenAI SDKs send, so apps only change base_url and api_key.
             provided_key = request.headers.get("x-api-key", "").strip()
@@ -90,7 +90,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             app_context.set(request.state.app_name)
             estimated_tokens = 0
-            if request.url.path.startswith(("/generate", "/stream", "/v1/chat/completions", "/v1/guard")):
+            if request.url.path.startswith(("/generate", "/stream", "/v1/chat/completions", "/v1/guard",
+                                             "/v1/messages", "/v1/responses")):
                 try:
                     # Starlette caches the body read here and replays it to
                     # downstream handlers; overriding request._receive breaks
