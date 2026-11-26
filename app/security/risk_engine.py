@@ -14,8 +14,9 @@ from app.core.config import (
     MAX_BEHAVIOR_RISK_SCORE,
     MAX_RISK_SCORE,
 )
-from app.core.config import REDIS_URL
+from app.core.context import app_context
 from app.core.logger import logger
+from app.core.redis_client import get_redis, reset_redis
 from app.observability.metrics import record_security_event, record_security_risk
 from app.observability.tracing import trace
 from app.security.pii_detector import PII_WEIGHTS, detect_pii
@@ -46,17 +47,7 @@ _redis_client = None
 
 
 def _get_redis_client():
-    global _redis_client
-    if _redis_client is not None:
-        return _redis_client
-    if redis is None:
-        return None
-    try:
-        _redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-        _redis_client.ping()
-    except Exception:
-        _redis_client = None
-    return _redis_client
+    return get_redis()
 
 
 def _behavior_risk(prompt: str) -> Tuple[float, dict]:
@@ -66,7 +57,10 @@ def _behavior_risk(prompt: str) -> Tuple[float, dict]:
 
     normalized = " ".join(prompt.strip().split()).lower()
     fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    key = f"ai_proxy:prompt_probe:{fingerprint}"
+    # Scoped per application: the counter used to be global, so one tenant repeating a
+    # prompt raised the risk score of every other tenant sending the same text.
+    tenant = hashlib.sha256(app_context.get().encode("utf-8")).hexdigest()[:12]
+    key = f"ai_proxy:prompt_probe:{tenant}:{fingerprint}"
     try:
         count = client.incr(key)
         client.expire(key, BEHAVIOR_RISK_WINDOW_SECONDS)
@@ -74,6 +68,7 @@ def _behavior_risk(prompt: str) -> Tuple[float, dict]:
         behavior_risk = min(0.35, max(0.0, (count - 1) / max(1, BEHAVIOR_RISK_RATE_THRESHOLD) * 0.12))
         return behavior_risk, {"behavior_count": count, "behavior_risk": behavior_risk}
     except Exception as exc:
+        reset_redis(exc)
         logger.warning(f"Behavior-risk tracking unavailable: {exc}")
         return 0.0, {"behavior_count": 0, "behavior_risk": 0.0}
 

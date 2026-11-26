@@ -1,22 +1,27 @@
 # Runtime dependencies only (installed in the Docker image).
 # Test / load-test tooling lives in requirements-dev.txt.
-fastapi
-uvicorn
-groq
-python-dotenv
-chromadb
-redis
+#
+# Bounded ranges: the lower bound is a version this code is tested with, the upper bound
+# stops an unreviewed major release from reaching production through a rebuild.
+# For fully reproducible images, generate a lock file from these ranges, e.g.
+#   pip-compile --generate-hashes requirements.txt -o requirements.lock
+fastapi>=0.115,<1.0
+starlette>=0.40,<1.0
+uvicorn[standard]>=0.30,<1.0
+python-dotenv>=1.0,<2.0
+chromadb>=1.0,<2.0
+redis>=5.0,<7.0
 # Model inference via ONNX Runtime (replaces torch/transformers/sentence-transformers)
-onnxruntime
-tokenizers
-huggingface_hub
-numpy
-pydantic
-prometheus-client
-opentelemetry-api
-opentelemetry-sdk
-opentelemetry-instrumentation-fastapi
-opentelemetry-instrumentation-asgi
-opentelemetry-exporter-otlp-proto-http
-presidio-analyzer
-httpx
+onnxruntime>=1.19,<2.0
+tokenizers>=0.20,<1.0
+huggingface_hub>=0.30,<1.0
+numpy>=1.26,<3.0
+pydantic>=2.7,<3.0
+prometheus-client>=0.20,<1.0
+opentelemetry-api>=1.30,<2.0
+opentelemetry-sdk>=1.30,<2.0
+opentelemetry-instrumentation-fastapi>=0.51b0,<1.0
+opentelemetry-instrumentation-asgi>=0.51b0,<1.0
+opentelemetry-exporter-otlp-proto-http>=1.30,<2.0
+presidio-analyzer>=2.2.355,<3.0
+httpx>=0.27,<1.0

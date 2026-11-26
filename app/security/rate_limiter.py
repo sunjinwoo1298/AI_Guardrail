@@ -8,11 +8,11 @@ try:
 except ImportError:  # pragma: no cover
     redis = None
 
-from app.core.config import (
-    BEHAVIOR_RISK_WINDOW_SECONDS,
-    REDIS_URL,
-)
+from app.core.config import RATE_LIMIT_FAIL_MODE
 from app.core.logger import logger
+from app.core.redis_client import get_redis, reset_redis
+
+UNAVAILABLE_REASON = "rate_limiter_unavailable"
 
 RPM_WINDOW_SECONDS = 60
 TPM_WINDOW_SECONDS = 60
@@ -79,18 +79,16 @@ class RateLimitResult:
 
 
 def _get_client():
-    global _redis_client
-    if _redis_client is not None:
-        return _redis_client
-    if redis is None:
-        return None
-    try:
-        _redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-        _redis_client.ping()
-    except Exception as exc:
-        logger.warning(f"Rate limiter Redis unavailable: {exc}")
-        _redis_client = None
-    return _redis_client
+    return get_redis()
+
+
+def _unavailable(rpm_limit: int, tpm_limit: int) -> RateLimitResult:
+    """RATE_LIMIT_FAIL_MODE=open lets traffic through unlimited (development default);
+    closed rejects it (production default), so a Redis outage can't remove every
+    tenant's quota at once."""
+    if RATE_LIMIT_FAIL_MODE == "closed":
+        return RateLimitResult(allowed=False, reason=UNAVAILABLE_REASON, rpm_limit=rpm_limit, tpm_limit=tpm_limit)
+    return RateLimitResult(allowed=True, rpm_limit=rpm_limit, tpm_limit=tpm_limit)
 
 
 def _eval(client, script: str, keys: list[str], args: list[object]):
@@ -117,7 +115,7 @@ def _default_limits(api_key: str) -> Tuple[int, int]:
 def check_and_consume(api_key: str, request_tokens: int, rpm_limit: int = 120, tpm_limit: int = 12000) -> RateLimitResult:
     client = _get_client()
     if client is None:
-        return RateLimitResult(allowed=True, rpm_limit=rpm_limit, tpm_limit=tpm_limit)
+        return _unavailable(rpm_limit, tpm_limit)
 
     rpm_key = _key(api_key, "rpm", RPM_WINDOW_SECONDS)
     tpm_key = _key(api_key, "tpm", TPM_WINDOW_SECONDS)
@@ -158,8 +156,9 @@ def check_and_consume(api_key: str, request_tokens: int, rpm_limit: int = 120, t
             tpm_limit=tpm_limit,
         )
     except Exception as exc:
-        logger.warning(f"Rate limiter failed open: {exc}")
-        return RateLimitResult(allowed=True, rpm_limit=rpm_limit, tpm_limit=tpm_limit)
+        reset_redis(exc)
+        logger.warning(f"Rate limiter unavailable (fail mode {RATE_LIMIT_FAIL_MODE}): {exc}")
+        return _unavailable(rpm_limit, tpm_limit)
 
 
 def refund_tokens(api_key: str, tokens: int):

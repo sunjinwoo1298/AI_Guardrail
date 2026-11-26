@@ -6,7 +6,20 @@ from app.core.config import PII_ENTITIES
 from app.core.logger import logger
 
 PII_PATTERNS = {
-    "API_KEY": r"\b(?:sk-[A-Za-z0-9_-]{10,}|rk_[A-Za-z0-9_-]{10,}|gsk_[A-Za-z0-9_-]{10,}|api[_-]?key\s*[:=]\s*[A-Za-z0-9_-]{10,})\b",
+    # Credentials and secrets. Besides OpenAI/Anthropic ("sk-"), Groq ("gsk_") and generic
+    # "api_key=..." these cover AWS access keys, GitHub, Slack, Google and Stripe tokens,
+    # JWTs and PEM private-key headers, which previously passed both directions unmasked.
+    "API_KEY": (
+        r"\b(?:sk-[A-Za-z0-9_-]{10,}|rk_[A-Za-z0-9_-]{10,}|gsk_[A-Za-z0-9_-]{10,}"
+        r"|(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{10,}"
+        r"|(?:AKIA|ASIA)[0-9A-Z]{16}"
+        r"|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}"
+        r"|xox[abprs]-[A-Za-z0-9-]{10,}"
+        r"|AIza[0-9A-Za-z_-]{35}"
+        r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+        r"|api[_-]?key\s*[:=]\s*[A-Za-z0-9_-]{10,})\b"
+        r"|-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"
+    ),
     "EMAIL": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
     "PHONE": r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b",
     "SSN": r"\b\d{3}-\d{2}-\d{4}\b",

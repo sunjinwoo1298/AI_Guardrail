@@ -16,8 +16,9 @@ from app.core.config import (
     GROQ_CIRCUIT_BREAKER_RESET_SECONDS,
     GROQ_RETRY_ATTEMPTS,
     GROQ_RETRY_BASE_DELAY_SECONDS,
-    GROQ_TIMEOUT_SECONDS,
     MAX_RESPONSE_CHARS,
+    REDACT_TOOL_CALL_ARGUMENTS,
+    RETRY_MAX_DELAY_SECONDS,
     SECONDARY_MODEL_NAME,
     DEFAULT_PROVIDER,
     EXPOSE_REASONING,
@@ -78,7 +79,7 @@ from app.core.tokens import estimate_messages_tokens, estimate_text_tokens
 from app.core.context import model_context
 from app.core.logger import logger
 from app.core.request_id import generate_request_id
-from app.core.resilience import CircuitBreaker, CircuitOpenError, retry_async
+from app.core.resilience import CircuitBreaker, CircuitOpenError, is_client_error, is_transient_error, retry_async
 from app.observability.metrics import (
     record_cache_saved_cost,
     record_model_observation,
@@ -87,7 +88,7 @@ from app.observability.metrics import (
     record_usage_source,
 )
 from app.observability.tracing import trace
-from app.security.sanitizer import public_security_metadata, sanitize_response
+from app.security.sanitizer import public_security_metadata, sanitize_response, sanitize_tool_calls
 from app.security.rate_limiter import refund_tokens, settle_tokens
 from app.services.cache_service import cache_response, get_exact_cache, search_semantic_cache
 from app.providers.factory import resolve_provider_and_model, get_adapter
@@ -266,7 +267,10 @@ async def _create_completion(messages: list[dict], model: str, stream: bool = Fa
 
     async def _call():
         if stream:
-            return await adapter.stream(messages=messages, model=real_model, **(params or {}))
+            # A provider stream only sends its request (and raises 429/5xx/connect
+            # errors) when first read, so read the first chunk inside the retried call.
+            upstream = await adapter.stream(messages=messages, model=real_model, **(params or {}))
+            return await _prefetch_first(upstream)
         else:
             return await adapter.generate(messages=messages, model=real_model, **(params or {}))
 
@@ -275,13 +279,52 @@ async def _create_completion(messages: list[dict], model: str, stream: bool = Fa
             _call,
             attempts=GROQ_RETRY_ATTEMPTS,
             base_delay_seconds=GROQ_RETRY_BASE_DELAY_SECONDS,
-            retry_exceptions=(asyncio.TimeoutError, TimeoutError, ConnectionError, OSError),
+            should_retry=is_transient_error,
+            max_delay_seconds=RETRY_MAX_DELAY_SECONDS,
         )
         breaker.record_success()
         return result
-    except Exception:
-        breaker.record_failure()
+    except Exception as exc:
+        # The caller's own bad request (a non-retryable 4xx) says nothing about the
+        # provider's health and must not open the breaker for every tenant.
+        if not is_client_error(exc):
+            breaker.record_failure()
         raise
+
+
+def _accumulate_tool_calls(buffer: dict, deltas) -> None:
+    """Merge OpenAI streaming tool-call deltas (keyed by ``index``) into whole calls."""
+    for position, delta in enumerate(deltas or []):
+        if not isinstance(delta, dict):
+            continue
+        index = delta.get("index", position)
+        call = buffer.setdefault(index, {"index": index, "type": "function",
+                                         "function": {"name": "", "arguments": ""}})
+        if delta.get("id"):
+            call["id"] = delta["id"]
+        if delta.get("type"):
+            call["type"] = delta["type"]
+        function = delta.get("function") or {}
+        if function.get("name"):
+            call["function"]["name"] += function["name"]
+        if function.get("arguments"):
+            call["function"]["arguments"] += function["arguments"]
+
+
+async def _prefetch_first(upstream):
+    """Read the first chunk of an async iterator and return an iterator that replays it."""
+    try:
+        first = await upstream.__anext__()
+    except StopAsyncIteration:
+        first = None
+
+    async def replay():
+        if first is not None:
+            yield first
+        async for chunk in upstream:
+            yield chunk
+
+    return replay()
 
 
 async def _open_stream(messages: list[dict], model: str, params: Optional[dict] = None):
@@ -296,8 +339,9 @@ async def _open_stream(messages: list[dict], model: str, params: Optional[dict] 
         first = await stream.__anext__()
     except StopAsyncIteration:
         first = None
-    except Exception:
-        get_circuit_breaker(model).record_failure()
+    except Exception as exc:
+        if not is_client_error(exc):
+            get_circuit_breaker(model).record_failure()
         raise
 
     async def replay():
@@ -627,8 +671,16 @@ async def generate_response(
 
         # Update content in original completion response
         chat_completion["choices"][0]["message"]["content"] = response_text
-        for choice in chat_completion.get("choices", []):
-            _scrub_reasoning(choice.get("message"))
+        for index, choice in enumerate(chat_completion.get("choices", [])):
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+            # Only choices[0] used to be redacted, so n>1 returned the other choices raw.
+            if index > 0 and isinstance(message.get("content"), str):
+                message["content"] = _truncate_response(sanitize_response(message["content"]))
+            if REDACT_TOOL_CALL_ARGUMENTS:
+                sanitize_tool_calls(message.get("tool_calls"))
+            _scrub_reasoning(message)
 
         metadata_payload = _build_metadata_payload(
             request_id=request_id,
@@ -655,7 +707,13 @@ async def generate_response(
         if client_error:
             raise client_error
         logger.exception(f"Error generating response: {e!r}")
-        raise HTTPException(status_code=500, detail=f"LLM API Error: {e!r}")
+        # Don't echo internal exception text (provider URLs, stack details) to clients;
+        # the request ID links the client's error to the logged traceback.
+        raise HTTPException(status_code=500, detail={
+            "message": f"Internal error while generating the response (request_id {request_id})",
+            "type": "internal_error",
+            "code": "internal_error",
+        })
 
 
 async def stream_response(
@@ -906,6 +964,8 @@ async def stream_response(
 
         finish_chunk: Optional[dict] = None
         streamed_tool_calls = False
+        tool_call_buffer: dict = {}
+        tool_call_template: Optional[dict] = None
 
         def _passthrough_chunk(template: dict, finish_reason=None) -> dict:
             """Forward a non-text chunk (tool-call deltas, the finish marker) without
@@ -938,7 +998,13 @@ async def stream_response(
                     pending = _within_limit(redactor.flush())
                     if pending:
                         yield "content", _redacted_chunk(chunk, pending)
-                    yield "content", _passthrough_chunk(chunk)
+                    if REDACT_TOOL_CALL_ARGUMENTS:
+                        # Argument fragments can split a secret across chunks, so collect
+                        # the calls and send each one whole, redacted, at the end.
+                        _accumulate_tool_calls(tool_call_buffer, delta["tool_calls"])
+                        tool_call_template = chunk
+                    else:
+                        yield "content", _passthrough_chunk(chunk)
                 if choice0.get("finish_reason"):
                     finish_chunk = chunk
 
@@ -950,6 +1016,12 @@ async def stream_response(
         tail = _within_limit(redactor.flush())
         if tail:
             yield "content", _redacted_chunk(last_chunk or {"object": "chat.completion.chunk", "model": used_model}, tail)
+        if tool_call_buffer:
+            calls = [tool_call_buffer[i] for i in sorted(tool_call_buffer)]
+            sanitize_tool_calls(calls)
+            out = _passthrough_chunk(tool_call_template or last_chunk or {"object": "chat.completion.chunk"})
+            out["choices"][0]["delta"] = {"tool_calls": calls}
+            yield "content", out
         if finish_chunk is not None:
             yield "content", _passthrough_chunk(finish_chunk, finish_chunk["choices"][0].get("finish_reason"))
 
@@ -1028,7 +1100,11 @@ async def stream_response(
             raise client_error
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail=f"LLM API Stream Error: {str(e)}")
+        raise HTTPException(status_code=500, detail={
+            "message": f"Internal error while streaming the response (request_id {request_id})",
+            "type": "internal_error",
+            "code": "internal_error",
+        })
 
 
 def uuid_id() -> str:

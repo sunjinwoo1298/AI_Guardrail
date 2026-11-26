@@ -12,7 +12,7 @@ def test_blocked_prompt_returns_403(monkeypatch):
         lambda text: (0.95, [{"type": "EMAIL"}], ["ignore (?:all|previous|any) instructions"]),
     )
     monkeypatch.setattr(security_middleware, "should_block_prompt", lambda score, detections: True)
-    monkeypatch.setattr(security_middleware, "sanitize_text", lambda text: "[EMAIL]")
+    monkeypatch.setattr(security_middleware, "sanitize_text", lambda text, detections=None: "[EMAIL]")
 
     client = TestClient(app)
     # Auth now runs before the security scan, so the request must carry a valid key.

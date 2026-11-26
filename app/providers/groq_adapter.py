@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 from typing import AsyncGenerator
 from app.providers.base import BaseLLMAdapter
+from app.providers.http import PROVIDER_TIMEOUT, provider_client
 from app.core.config import GROQ_API_KEY
 
 class GroqAdapter(BaseLLMAdapter):
@@ -39,12 +40,12 @@ class GroqAdapter(BaseLLMAdapter):
             if k not in payload:
                 payload[k] = v
 
-        async with httpx.AsyncClient() as client:
+        async with provider_client() as client:
             response = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30.0
+                timeout=PROVIDER_TIMEOUT
             )
             response.raise_for_status()
             return response.json()
@@ -82,13 +83,13 @@ class GroqAdapter(BaseLLMAdapter):
                 payload[k] = v
 
         async def _stream_generator():
-            async with httpx.AsyncClient() as client:
+            async with provider_client() as client:
                 async with client.stream(
                     "POST",
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers=headers,
                     json=payload,
-                    timeout=30.0
+                    timeout=PROVIDER_TIMEOUT
                 ) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():

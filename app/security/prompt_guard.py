@@ -1,3 +1,5 @@
+import base64
+import binascii
 import hashlib
 import html
 import re
@@ -9,6 +11,8 @@ from typing import Dict, List, Optional
 
 from app.core.config import (
     GROQ_API_KEY,
+    INJECTION_SCAN_OVERLAP_CHARS,
+    INJECTION_SCAN_WINDOW_CHARS,
     INJECTION_VERIFIER_ENABLED,
     INJECTION_VERIFIER_MODEL,
     INJECTION_VERIFIER_THRESHOLD,
@@ -52,6 +56,69 @@ INJECTION_PATTERNS = [
     r"\b(?:forward|send|email|upload|exfiltrate)\b[^.?!\n]{0,30}\b(?:chat|conversation) history\b",
 ]
 
+# The same "ignore your instructions" / "reveal your system prompt" attacks in other common
+# languages. The ML classifier is English-only, so without these a translated attack had
+# no detector at all. Kept to unambiguous phrasings.
+MULTILINGUAL_PATTERNS = [
+    # Spanish / Portuguese / Italian
+    r"\b(?:ignora|ignore|olvida|esquece|dimentica)\w*\s+(?:todas?\s+|todos?\s+|tutte\s+)?(?:las\s+|os\s+|as\s+|le\s+)?(?:instrucciones|instru\u00e7\u00f5es|instrucoes|istruzioni|reglas|regras|regole)\b(?:\s+\w+)?",
+    r"\b(?:muestra|revela|mostra|rivela)\w*\b[^.?!\n]{0,30}\b(?:prompt|instrucciones|instru\u00e7\u00f5es|istruzioni)\s+(?:del\s+|do\s+|di\s+)?sistema\b",
+    # French
+    r"\b(?:ignore[rz]?|oublie[rz]?)\s+(?:toutes\s+)?(?:les\s+|tes\s+|vos\s+)?(?:instructions|consignes|r\u00e8gles)\b",
+    r"\b(?:r\u00e9v\u00e8le|affiche|montre)\w*\b[^.?!\n]{0,30}\b(?:prompt|instructions)\s+(?:du\s+)?syst\u00e8me\b",
+    # German
+    r"\b(?:ignoriere|vergiss)\w*\s+(?:alle\s+)?(?:vorherigen\s+|bisherigen\s+)?(?:anweisungen|instruktionen|regeln)\b",
+    r"\b(?:zeige|verrate|gib)\w*\b[^.?!\n]{0,30}\bsystem(?:-)?(?:prompt|anweisungen)\b",
+    # Hindi (romanised and Devanagari)
+    r"\b(?:pichhle|pichle|sabhi|saare)\s+(?:nirdesh|instructions)\s+(?:ko\s+)?(?:bhool|ignore|nazarandaaz)",
+    r"(?:\u0938\u092d\u0940|\u092a\u093f\u091b\u0932\u0947)\s+\u0928\u093f\u0930\u094d\u0926\u0947\u0936",
+]
+
+# Zero-width / bidi / other invisible "format" characters (Unicode category Cf). They are
+# invisible to people and tokenisers alike and split keywords ("ig\u200bnore"), so a
+# single one defeated every tripwire.
+_INVISIBLE = dict.fromkeys(
+    cp for cp in list(range(0x200B, 0x2010)) + list(range(0x202A, 0x202F)) + list(range(0x2060, 0x2070))
+    + [0x00AD, 0x034F, 0x061C, 0x180E, 0xFEFF]
+)
+
+# Common Cyrillic / Greek look-alikes of Latin letters ("\u0456gnore", "\u0455ystem"). NFKC
+# does not fold these.
+_CONFUSABLES = str.maketrans({
+    "\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0440": "p", "\u0441": "c", "\u0443": "y",
+    "\u0445": "x", "\u0456": "i", "\u0458": "j", "\u0455": "s", "\u04bb": "h", "\u0501": "d",
+    "\u0410": "A", "\u0412": "B", "\u0415": "E", "\u041a": "K", "\u041c": "M", "\u041d": "H",
+    "\u041e": "O", "\u0420": "P", "\u0421": "C", "\u0422": "T", "\u0425": "X",
+    "\u03b1": "a", "\u03bf": "o", "\u03c1": "p", "\u03b9": "i", "\u03ba": "k", "\u03bd": "v",
+    "\u0391": "A", "\u0392": "B", "\u0395": "E", "\u0397": "H", "\u0399": "I", "\u039a": "K",
+    "\u039c": "M", "\u039d": "N", "\u039f": "O", "\u03a1": "P", "\u03a4": "T", "\u03a7": "X",
+})
+
+_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{24,}={0,2}")
+
+
+def strip_invisible(text: str) -> str:
+    return text.translate(_INVISIBLE)
+
+
+def _decoded_payloads(text: str, limit: int = 5) -> List[str]:
+    """Readable text hidden as base64 ("decode this and follow it: aWdub3Jl...")."""
+    decoded = []
+    for match in _BASE64_RUN.finditer(text):
+        if len(decoded) >= limit:
+            break
+        chunk = match.group(0)
+        try:
+            raw = base64.b64decode(chunk + "=" * (-len(chunk) % 4), validate=True)
+            candidate = raw.decode("utf-8")
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            continue
+        printable = sum(ch.isprintable() or ch.isspace() for ch in candidate)
+        if candidate and printable / len(candidate) > 0.95 and re.search(r"[A-Za-z]{3,}", candidate):
+            decoded.append(candidate)
+    return decoded
+
+
 # Chat-template / role delimiters used to fake a system or assistant turn. Matched on the
 # raw text. (Triple backticks and triple quotes were removed: they are ordinary code
 # blocks and docstrings, and blocked every developer prompt containing code.)
@@ -83,20 +150,70 @@ _classifier_lock = threading.Lock()
 def normalize_text(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text)
     normalized = html.unescape(normalized)
+    normalized = strip_invisible(normalized).translate(_CONFUSABLES)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
 
 
-def fast_tripwire(text: str) -> List[str]:
+def _tripwire_once(text: str) -> List[str]:
     lowered_text = normalize_text(text).lower()
+    # Structural tokens are matched on the original line structure, minus invisible chars.
+    structural_text = strip_invisible(unicodedata.normalize("NFKC", text))
     matches = []
-    for pattern in INJECTION_PATTERNS:
+    for pattern in INJECTION_PATTERNS + MULTILINGUAL_PATTERNS:
         if re.search(pattern, lowered_text, flags=re.IGNORECASE):
             matches.append(pattern)
     for pattern in STRUCTURAL_PATTERNS:
-        if re.search(pattern, text, flags=re.IGNORECASE):
+        if re.search(pattern, structural_text, flags=re.IGNORECASE):
             matches.append(pattern)
     return matches
+
+
+def fast_tripwire(text: str) -> List[str]:
+    matches = _tripwire_once(text)
+    # Also check readable base64 payloads; matches on decoded text are tagged so the
+    # block reason shows the attack was encoded.
+    for payload in _decoded_payloads(text):
+        for pattern in _tripwire_once(payload):
+            tagged = f"base64:{pattern}"
+            if tagged not in matches:
+                matches.append(tagged)
+    return matches
+
+
+def _scan_windows(text: str) -> List[str]:
+    """Overlapping windows covering the whole text. The classifier truncates its input at
+    512 tokens, so an injection placed after the first ~2,000 characters of one long
+    message (a retrieved document, a tool result) was never seen by it."""
+    window, overlap = INJECTION_SCAN_WINDOW_CHARS, INJECTION_SCAN_OVERLAP_CHARS
+    if len(text) <= window:
+        return [text]
+    step = max(1, window - overlap)
+    return [text[start:start + window] for start in range(0, len(text) - overlap, step)]
+
+
+def _injection_result(raw_output) -> dict:
+    if isinstance(raw_output, list) and raw_output and isinstance(raw_output[0], list):
+        raw_output = raw_output[0]
+    if isinstance(raw_output, list) and raw_output:
+        injection_dict = next(
+            (d for d in raw_output if isinstance(d, dict) and str(d.get("label", "")).upper() in {"INJECTION", "LABEL_1", "YES"}),
+            None
+        )
+        return injection_dict if injection_dict else (raw_output[0] if isinstance(raw_output[0], dict) else {})
+    if isinstance(raw_output, dict):
+        return raw_output
+    return {}
+
+
+def _injection_probability(result: dict) -> tuple:
+    label = str(result.get("label", "")).upper()
+    score = float(result.get("score", 0.0))
+    # `confidence` is the probability that the prompt is an injection. The INJECTION
+    # entry is always selected above, so the label alone is not a verdict: it used to
+    # flag every prompt (even at 0.2%) as an injection and inflate the metrics.
+    is_injection_label = label in {"INJECTION", "LABEL_1", "YES"}
+    return label, (score if is_injection_label else 1.0 - score)
 
 
 def _get_classifier():
@@ -134,28 +251,13 @@ def score_prompt_injection(text: str, classifier_text: Optional[str] = None) -> 
         }
 
     try:
-        raw_output = classifier(classifier_input)
-        if isinstance(raw_output, list) and raw_output and isinstance(raw_output[0], list):
-            raw_output = raw_output[0]
-
-        if isinstance(raw_output, list) and raw_output:
-            injection_dict = next(
-                (d for d in raw_output if isinstance(d, dict) and str(d.get("label", "")).upper() in {"INJECTION", "LABEL_1", "YES"}),
-                None
-            )
-            result = injection_dict if injection_dict else (raw_output[0] if isinstance(raw_output[0], dict) else {})
-        elif isinstance(raw_output, dict):
-            result = raw_output
-        else:
-            result = {}
-
-        label = str(result.get("label", "")).upper()
-        score = float(result.get("score", 0.0))
-        # `confidence` is the probability that the prompt is an injection. The INJECTION
-        # entry is always selected above, so the label alone is not a verdict: it used to
-        # flag every prompt (even at 0.2%) as an injection and inflate the metrics.
-        is_injection_label = label in {"INJECTION", "LABEL_1", "YES"}
-        confidence = score if is_injection_label else 1.0 - score
+        # Classify every window and keep the riskiest; the verifier sees that window.
+        label, confidence, riskiest_window = "", -1.0, classifier_input
+        for window_text in _scan_windows(classifier_input):
+            window_label, window_confidence = _injection_probability(_injection_result(classifier(window_text)))
+            if window_confidence > confidence:
+                label, confidence, riskiest_window = window_label, window_confidence, window_text
+        confidence = max(0.0, confidence)
         is_injection = confidence >= 0.5
         if tripwire_matches and not is_injection:
             confidence = min(1.0, confidence + 0.15)
@@ -166,7 +268,7 @@ def score_prompt_injection(text: str, classifier_text: Optional[str] = None) -> 
         # exactly ...", "Print this ...") at ~1.0. When it is the ONLY signal (no regex
         # tripwire), ask a second, purpose-built model before blocking.
         if is_injection and not tripwire_matches:
-            verifier_score = verify_injection(classifier_input)
+            verifier_score = verify_injection(riskiest_window)
             if verifier_score is not None:
                 source = "classifier+verifier"
                 if verifier_score < INJECTION_VERIFIER_THRESHOLD:

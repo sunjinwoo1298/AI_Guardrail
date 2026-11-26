@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 from typing import AsyncGenerator
 from app.providers.base import BaseLLMAdapter
+from app.providers.http import PROVIDER_TIMEOUT, provider_client
 from app.core.config import OPENAI_API_KEY
 
 class OpenAIAdapter(BaseLLMAdapter):
@@ -48,12 +49,12 @@ class OpenAIAdapter(BaseLLMAdapter):
             if k not in payload:
                 payload[k] = v
 
-        async with httpx.AsyncClient() as client:
+        async with provider_client() as client:
             response = await client.post(
                 self.chat_url,
                 headers=headers,
                 json=payload,
-                timeout=30.0
+                timeout=PROVIDER_TIMEOUT
             )
             response.raise_for_status()
             return response.json()
@@ -92,13 +93,13 @@ class OpenAIAdapter(BaseLLMAdapter):
                 payload[k] = v
 
         async def _stream_generator():
-            async with httpx.AsyncClient() as client:
+            async with provider_client() as client:
                 async with client.stream(
                     "POST",
                     self.chat_url,
                     headers=headers,
                     json=payload,
-                    timeout=30.0
+                    timeout=PROVIDER_TIMEOUT
                 ) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():

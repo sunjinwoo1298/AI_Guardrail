@@ -25,7 +25,8 @@ services:
     image: redis:7-alpine
     container_name: ai-guardrail-redis
     ports:
-      - "6379:6379"
+      # Local-only: Redis has no password here, so never publish it on all interfaces.
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
@@ -52,8 +53,9 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      # Set GRAFANA_ADMIN_PASSWORD in .env; "admin" is only a local-development fallback.
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana_data:/var/lib/grafana

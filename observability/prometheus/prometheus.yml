@@ -5,6 +5,11 @@ global:
 scrape_configs:
   - job_name: "ai-guardrail-proxy"
     metrics_path: /metrics
+    # When the proxy runs with METRICS_AUTH_TOKEN (required in production), uncomment and
+    # mount a file containing the token:
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/metrics_token
     static_configs:
       - targets:
           - app:8000

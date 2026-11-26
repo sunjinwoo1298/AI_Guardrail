@@ -32,6 +32,7 @@ from app.core.config import (
     REDIS_TIMEOUT_SECONDS,
 )
 from app.core.logger import logger
+from app.core.redis_client import get_redis
 from app.observability.metrics import record_cache_lookup, record_cache_write
 from app.observability.tracing import trace
 from app.security.sanitizer import public_security_metadata
@@ -68,27 +69,8 @@ def _chroma_metadata(payload: dict) -> dict:
 
 
 def get_redis_client():
-    global _redis_client
-    if _redis_client is not None:
-        return _redis_client
-
-    if redis is None:
-        logger.warning("Redis library is unavailable")
-        return None
-
-    with _lock:
-        if _redis_client is not None:
-            return _redis_client
-
-        try:
-            _redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-            _redis_client.ping()
-            logger.info("Redis cache initialized")
-        except Exception as exc:
-            logger.warning(f"Redis cache unavailable: {exc}")
-            _redis_client = None
-
-    return _redis_client
+    # Shared, time-bounded client (app/core/redis_client.py).
+    return get_redis()
 
 
 def get_chroma_collection():

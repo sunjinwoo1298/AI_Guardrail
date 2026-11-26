@@ -6,6 +6,7 @@ import time
 import uuid
 from typing import AsyncGenerator
 from app.providers.base import BaseLLMAdapter
+from app.providers.http import PROVIDER_TIMEOUT, provider_client
 from app.core.config import GEMINI_API_KEY
 
 def translate_messages_to_gemini(messages: list[dict]) -> tuple[dict | None, list[dict]]:
@@ -156,12 +157,12 @@ class GeminiAdapter(BaseLLMAdapter):
         # raise_for_status() errors include them, which leaked the key into logs.
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-        async with httpx.AsyncClient() as client:
+        async with provider_client() as client:
             response = await client.post(
                 url,
                 json=payload,
                 headers={"x-goog-api-key": self.api_key},
-                timeout=30.0
+                timeout=PROVIDER_TIMEOUT
             )
             response.raise_for_status()
             return translate_gemini_response_to_openai(response.json(), model)
@@ -198,13 +199,13 @@ class GeminiAdapter(BaseLLMAdapter):
         async def _stream_generator():
             chunk_id = f"chatcmpl-{uuid.uuid4()}"
             created_time = int(time.time())
-            async with httpx.AsyncClient() as client:
+            async with provider_client() as client:
                 async with client.stream(
                     "POST",
                     url,
                     json=payload,
                     headers={"x-goog-api-key": self.api_key},
-                    timeout=30.0
+                    timeout=PROVIDER_TIMEOUT
                 ) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():

@@ -6,6 +6,7 @@ import time
 import uuid
 from typing import AsyncGenerator
 from app.providers.base import BaseLLMAdapter
+from app.providers.http import PROVIDER_TIMEOUT, provider_client
 from app.core.config import ANTHROPIC_API_KEY
 
 def translate_messages_to_anthropic(messages: list[dict]) -> tuple[str | None, list[dict]]:
@@ -103,12 +104,12 @@ class AnthropicAdapter(BaseLLMAdapter):
         if temperature is not None:
             payload["temperature"] = temperature
 
-        async with httpx.AsyncClient() as client:
+        async with provider_client() as client:
             response = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers=headers,
                 json=payload,
-                timeout=30.0
+                timeout=PROVIDER_TIMEOUT
             )
             response.raise_for_status()
             return translate_anthropic_response_to_openai(response.json(), model)
@@ -151,13 +152,13 @@ class AnthropicAdapter(BaseLLMAdapter):
             
             input_tokens = 0
             
-            async with httpx.AsyncClient() as client:
+            async with provider_client() as client:
                 async with client.stream(
                     "POST",
                     "https://api.anthropic.com/v1/messages",
                     headers=headers,
                     json=payload,
-                    timeout=30.0
+                    timeout=PROVIDER_TIMEOUT
                 ) as response:
                     response.raise_for_status()
                     current_event = None

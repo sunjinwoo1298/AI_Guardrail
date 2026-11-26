@@ -73,6 +73,17 @@ APP_POLICIES = _parse_app_policies(os.getenv("APP_POLICIES", ""))
 
 def get_app_policy(app_name: str) -> dict:
     return APP_POLICIES.get(app_name, {})
+
+
+def get_canaries(app_name: str) -> list:
+    """Canary tokens to redact from this app's responses: the global one plus the app's
+    own (APP_POLICIES {"app": {"canary": "..."}}), so each tenant can plant a private
+    token in its system prompt instead of sharing one published default."""
+    canaries = [SYSTEM_PROMPT_CANARY] if SYSTEM_PROMPT_CANARY else []
+    own = get_app_policy(app_name).get("canary")
+    if isinstance(own, str) and own and own not in canaries:
+        canaries.append(own)
+    return canaries
 REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "true").lower() == "true"
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "4000"))
 MAX_RESPONSE_CHARS = int(os.getenv("MAX_RESPONSE_CHARS", "12000"))
@@ -146,6 +157,39 @@ PII_ENTITIES = frozenset(
     if e.strip()
 )
 
+# ---------------------------------------------------------------------------
+# Production hardening (Phase 0)
+# ---------------------------------------------------------------------------
+# "production" turns on strict checks in validate_settings(): no public default canary,
+# /metrics must be protected, interactive docs off unless ENABLE_DOCS=true.
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
+IS_PRODUCTION = ENVIRONMENT == "production"
+DEFAULT_SYSTEM_PROMPT_CANARY = "AI_GUARDRAIL_SYSTEM_CANARY_7f3b9a"
+# Interactive API docs (/docs, /redoc, /openapi.json). Off by default in production.
+ENABLE_DOCS = os.getenv("ENABLE_DOCS", "false" if IS_PRODUCTION else "true").lower() == "true"
+# Bearer token required to scrape /metrics. Empty = public (development only).
+METRICS_AUTH_TOKEN = os.getenv("METRICS_AUTH_TOKEN", "").strip()
+# Hard cap on the raw request body, checked before any parsing or scanning.
+MAX_REQUEST_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(1024 * 1024)))
+# Total characters of untrusted text (user + tool messages) in one chat request.
+# MAX_PROMPT_CHARS only applied to /generate's "prompt", so chat payloads were unbounded.
+MAX_CHAT_INPUT_CHARS = int(os.getenv("MAX_CHAT_INPUT_CHARS", "32000"))
+# The injection classifier reads at most 512 tokens, so longer texts are scanned in
+# overlapping windows of this many characters (~400 tokens of English).
+INJECTION_SCAN_WINDOW_CHARS = int(os.getenv("INJECTION_SCAN_WINDOW_CHARS", "1500"))
+INJECTION_SCAN_OVERLAP_CHARS = int(os.getenv("INJECTION_SCAN_OVERLAP_CHARS", "200"))
+# Provider HTTP timeouts. The adapters used a hardcoded 30 s and ignored config.
+PROVIDER_CONNECT_TIMEOUT_SECONDS = float(os.getenv("PROVIDER_CONNECT_TIMEOUT_SECONDS", "5"))
+PROVIDER_READ_TIMEOUT_SECONDS = float(os.getenv("PROVIDER_READ_TIMEOUT_SECONDS", "60"))
+PROVIDER_MAX_CONNECTIONS = int(os.getenv("PROVIDER_MAX_CONNECTIONS", "200"))
+# Upper bound for one retry back-off sleep (also caps a provider's Retry-After).
+RETRY_MAX_DELAY_SECONDS = float(os.getenv("RETRY_MAX_DELAY_SECONDS", "4"))
+# Mask PII and secrets in tool-call arguments the model produces.
+REDACT_TOOL_CALL_ARGUMENTS = os.getenv("REDACT_TOOL_CALL_ARGUMENTS", "true").lower() == "true"
+# What to do when Redis (rate limiting) is unreachable: "open" lets traffic through
+# unlimited, "closed" rejects with 503. Production defaults to closed.
+RATE_LIMIT_FAIL_MODE = os.getenv("RATE_LIMIT_FAIL_MODE", "closed" if IS_PRODUCTION else "open").strip().lower()
+
 
 def validate_settings():
     errors = []
@@ -211,6 +255,32 @@ def validate_settings():
 
     if REQUIRE_API_KEY and not API_KEYS:
         errors.append("API_KEYS must contain at least one key when REQUIRE_API_KEY=true")
+
+    if ENVIRONMENT not in {"development", "production", "test"}:
+        errors.append("ENVIRONMENT must be one of: development, production, test")
+    if RATE_LIMIT_FAIL_MODE not in {"open", "closed"}:
+        errors.append("RATE_LIMIT_FAIL_MODE must be 'open' or 'closed'")
+    if MAX_REQUEST_BODY_BYTES <= 0:
+        errors.append("MAX_REQUEST_BODY_BYTES must be positive")
+    if MAX_CHAT_INPUT_CHARS <= 0:
+        errors.append("MAX_CHAT_INPUT_CHARS must be positive")
+    if not 0 <= INJECTION_SCAN_OVERLAP_CHARS < INJECTION_SCAN_WINDOW_CHARS:
+        errors.append("INJECTION_SCAN_OVERLAP_CHARS must be >= 0 and smaller than INJECTION_SCAN_WINDOW_CHARS")
+    if PROVIDER_CONNECT_TIMEOUT_SECONDS <= 0 or PROVIDER_READ_TIMEOUT_SECONDS <= 0:
+        errors.append("PROVIDER_*_TIMEOUT_SECONDS must be positive")
+    for app_name, policy in APP_POLICIES.items():
+        canary = policy.get("canary")
+        if canary is not None and (not isinstance(canary, str) or len(canary) < 12):
+            errors.append(f"APP_POLICIES[{app_name}].canary must be a string of at least 12 characters")
+
+    if IS_PRODUCTION:
+        # The default canary is published in this repository, so it protects nothing.
+        if SYSTEM_PROMPT_CANARY == DEFAULT_SYSTEM_PROMPT_CANARY:
+            errors.append("SYSTEM_PROMPT_CANARY must be set to a private random value in production")
+        if not METRICS_AUTH_TOKEN:
+            errors.append("METRICS_AUTH_TOKEN is required in production (/metrics exposes app names and traffic)")
+        if not REQUIRE_API_KEY:
+            errors.append("REQUIRE_API_KEY cannot be false in production")
 
     if errors:
         raise ValueError("Invalid configuration: " + "; ".join(errors))

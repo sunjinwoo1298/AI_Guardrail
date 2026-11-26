@@ -1,13 +1,16 @@
-from pydantic import BaseModel, ConfigDict, validator
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.core.config import MAX_PROMPT_CHARS
+
 
 class PromptRequest(BaseModel):
     prompt: str
 
-    @validator("prompt")
-    def validate_prompt(cls, value):
+    @field_validator("prompt")
+    @classmethod
+    def validate_prompt(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized:
             raise ValueError("prompt must not be empty")
@@ -27,17 +30,16 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = None
     stream: Optional[bool] = False
 
-    @validator("messages")
-    def validate_messages(cls, value):
+    @field_validator("messages")
+    @classmethod
+    def validate_messages(cls, value: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not value:
             raise ValueError("messages must not be empty")
         return value
 
-    @validator("model")
-    def validate_model(cls, value):
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("model must not be empty")
         return value.strip()
-
-
-    

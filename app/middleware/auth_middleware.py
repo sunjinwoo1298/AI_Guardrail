@@ -4,12 +4,27 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.core.config import API_KEY_APPS, API_KEYS, REQUIRE_API_KEY, get_app_policy, RPM_LIMIT_PER_MINUTE, TPM_LIMIT_PER_MINUTE
+from app.core.config import (
+    API_KEY_APPS,
+    MAX_REQUEST_BODY_BYTES,
+    REQUIRE_API_KEY,
+    RPM_LIMIT_PER_MINUTE,
+    TPM_LIMIT_PER_MINUTE,
+    get_app_policy,
+)
 from app.core.context import app_context
 from app.core.logger import logger
 from app.core.request_id import generate_request_id
 from app.core.tokens import estimate_messages_tokens, estimate_text_tokens
-from app.security.rate_limiter import check_and_consume
+from app.security.rate_limiter import UNAVAILABLE_REASON, check_and_consume
+
+
+def _too_large(size: int) -> JSONResponse:
+    return JSONResponse(status_code=413, content={"error": {
+        "message": f"Request body too large: {size} bytes (limit {MAX_REQUEST_BODY_BYTES})",
+        "type": "invalid_request_error",
+        "code": "request_too_large",
+    }})
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -18,6 +33,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path in {"/health", "/ready", "/metrics", "/"}:
             return await call_next(request)
 
+        # Reject oversized bodies before reading, parsing or scanning them.
+        content_length = request.headers.get("content-length", "")
+        if content_length.isdigit() and int(content_length) > MAX_REQUEST_BODY_BYTES:
+            return _too_large(int(content_length))
+
         if request.url.path.startswith(("/generate", "/stream", "/v1/")) and REQUIRE_API_KEY:
             # Accept the proxy key as x-api-key or as "Authorization: Bearer <key>", which
             # is what the OpenAI SDKs send, so apps only change base_url and api_key.
@@ -25,7 +45,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             auth_header = request.headers.get("authorization", "")
             if not provided_key and auth_header.lower().startswith("bearer "):
                 provided_key = auth_header[7:].strip()
-            if not provided_key or provided_key not in API_KEYS:
+            if not provided_key or provided_key not in API_KEY_APPS:
                 logger.warning("Unauthorized request rejected for path=%s", request.url.path)
                 return JSONResponse(
                     status_code=401,
@@ -42,6 +62,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     # downstream handlers; overriding request._receive breaks
                     # disconnect detection and crashes streaming responses.
                     body = await request.body()
+                    if len(body) > MAX_REQUEST_BODY_BYTES:  # chunked uploads carry no Content-Length
+                        return _too_large(len(body))
                     if body:
                         import json
                         payload = json.loads(body.decode("utf-8"))
@@ -62,6 +84,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
             request.state.rate_limit = rate_limit
             request.state.reserved_tokens = estimated_tokens
+            if not rate_limit.allowed and rate_limit.reason == UNAVAILABLE_REASON:
+                logger.error("Rate limiter unavailable and RATE_LIMIT_FAIL_MODE=closed; rejecting request")
+                return JSONResponse(
+                    status_code=503,
+                    headers={"Retry-After": "5"},
+                    content={"error": {
+                        "message": "Rate limiting is temporarily unavailable; request rejected",
+                        "type": "service_unavailable",
+                        "code": "rate_limiter_unavailable",
+                    }},
+                )
             if not rate_limit.allowed:
                 logger.warning("Rate limit exceeded for path=%s reason=%s", request.url.path, rate_limit.reason)
                 # Limits use fixed 60s buckets, so the budget resets at the next minute boundary.

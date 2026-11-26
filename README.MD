@@ -324,6 +324,27 @@ All settings are environment variables (usually in `.env`). The most important o
 | `EXPOSE_REASONING` | `false` | Return (redacted) model reasoning fields |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none | Where traces are sent |
 
+### Production settings
+
+Set `ENVIRONMENT=production` for any deployment that serves real traffic. Startup then fails unless the settings below are safe, and `/ready` returns `503` while the injection classifier (or Redis, when rate limiting fails closed) is unavailable.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ENVIRONMENT` | `development` | `production` enables the strict checks below |
+| `SYSTEM_PROMPT_CANARY` | public default | **Required in production.** A private random token you place in system prompts; redacted from all output |
+| `APP_POLICIES[app].canary` | none | A per-app canary (at least 12 characters), redacted from that app's output |
+| `METRICS_AUTH_TOKEN` | none | **Required in production.** `/metrics` then needs `Authorization: Bearer <token>` (see `observability/prometheus/prometheus.yml`) |
+| `ENABLE_DOCS` | `true` (`false` in production) | Serve `/docs`, `/redoc` and `/openapi.json` |
+| `RATE_LIMIT_FAIL_MODE` | `open` (`closed` in production) | When Redis is unreachable: `open` allows traffic unlimited, `closed` returns `503` |
+| `MAX_REQUEST_BODY_BYTES` | `1048576` | Requests with larger bodies get `413` before any parsing |
+| `MAX_CHAT_INPUT_CHARS` | `32000` | Total user + tool text per chat request (`413 input_too_long`) |
+| `INJECTION_SCAN_WINDOW_CHARS`, `INJECTION_SCAN_OVERLAP_CHARS` | `1500`, `200` | Long messages are classified in overlapping windows, because the classifier reads only 512 tokens |
+| `PROVIDER_CONNECT_TIMEOUT_SECONDS`, `PROVIDER_READ_TIMEOUT_SECONDS` | `5`, `60` | Provider HTTP timeouts (pooled connections) |
+| `PROVIDER_MAX_CONNECTIONS` | `200` | Connection pool size per worker |
+| `RETRY_MAX_DELAY_SECONDS` | `4` | Longest back-off; a longer provider `Retry-After` fails over to the fallback model instead |
+| `REDACT_TOOL_CALL_ARGUMENTS` | `true` | Mask PII, secrets and canaries in tool-call arguments (streamed tool calls are sent whole, once complete) |
+| `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD` | `admin` | Grafana login in Docker Compose; set a real password |
+
 See [`app/core/config.py`](app/core/config.py) for every setting and its validation.
 
 ## Local development and tests
@@ -349,7 +370,7 @@ Run the console against it:
 cd frontend && npm install && npm run dev
 ```
 
-Run the test suite (98 tests; no network access needed):
+Run the test suite (150 tests; no network access needed):
 
 ```bash
 python -m pytest -q
