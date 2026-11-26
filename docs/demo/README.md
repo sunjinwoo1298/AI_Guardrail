@@ -6,7 +6,8 @@ nothing is mocked.
 
 | File | What it shows |
 |---|---|
-| `guardrail-proxy-demo.mp4` | 3 min 49 s captioned walkthrough (kept out of git because of its size; regenerate with the command below) |
+| `guardrail-proxy-demo.webm` | 3 min 49 s captioned walkthrough (VP9, 1280x800; plays in any current browser and on GitHub) |
+| `demo-preview.gif` | Short preview, one frame every 4 seconds, shown at the top of the main README |
 | `screenshots/01-inspect/` | Personal data masked; instruction override, tool-result injection and zero-width evasion blocked; ordinary question allowed; full request to Groq; exact-cache hit |
 | `screenshots/02-tenants-policies/` | Tenant and key created; monitor mode ("would block"); enforce, version history, re-run result |
 | `screenshots/03-agent-security/` | Tool-call verdicts; leaking image removed; session locked after repeated attacks |
@@ -26,10 +27,11 @@ docker compose -f docker-compose.observability.yml up -d --build
 set ADMIN_API_TOKEN=<the proxy's ADMIN_API_TOKEN>
 python load_test\e2e_check.py
 python load_test\record_demo.py --out docs\demo
+python load_test\encode_demo.py --dir docs\demo
 ```
 
 `e2e_check.py` caps real model calls (`GROQ_BUDGET`, default 6; `OPENROUTER_BUDGET`, default 1).
-`record_demo.py` needs Playwright with Microsoft Edge and OpenCV; it makes one Groq call
+`record_demo.py` needs Playwright with Microsoft Edge and OpenCV and writes an MP4 that only desktop players open; `encode_demo.py` converts it to the WebM and GIF used in the README (VP9 encoding takes 10-15 minutes). `record_demo.py` it makes one Groq call
 (the repeat is served from cache). For a clean take, start with an empty control-plane
 database and cleared caches so the console's "Create demo tenant" path and a fresh model
 call are shown.

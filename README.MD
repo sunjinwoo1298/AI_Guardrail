@@ -2,7 +2,9 @@
 
 **A security and observability gateway for LLM applications.** Point any app that uses an OpenAI SDK at the proxy, and every request is authenticated, rate-limited, scanned for prompt injection and personal data, cached, routed to the right model provider, redacted on the way back, and recorded in metrics, logs and traces. The app itself only changes two settings: `base_url` and `api_key`.
 
-![Grafana dashboard for the proxy](docs/screenshots/06-grafana-dashboard.png)
+[![Demo of the console: attacks blocked, personal data masked, tenants, agent security and dashboards](docs/demo/demo-preview.gif)](docs/demo/guardrail-proxy-demo.webm)
+
+**[Watch the full captioned demo (3 min 49 s)](docs/demo/guardrail-proxy-demo.webm)**: every screen is a real request to the proxy running in Docker. Tested end to end: [38/38 checks pass](docs/demo/e2e-report.json).
 
 ---
 
@@ -11,7 +13,7 @@
 - [Why it exists](#why-it-exists)
 - [Features](#features)
 - [How a request flows](#how-a-request-flows)
-- [Screenshot tour](#screenshot-tour)
+- [Demo](#demo)
 - [Quick start](#quick-start)
 - [Connect your application](#connect-your-application)
 - [Per-app keys and policies](#per-app-keys-and-policies)
@@ -56,7 +58,7 @@ Every team that adds an LLM to an application ends up rebuilding the same protec
 | **Providers** | Groq, OpenAI, Anthropic, Gemini, and OpenRouter (free models only by default) behind one model naming scheme |
 | **Resilience** | Timeouts, retries with backoff, per-model circuit breaker, fallback model, `503` + `Retry-After` when all models are down; provider `4xx` errors are passed through |
 | **Observability** | Prometheus metrics labelled by app and model, a 16-panel Grafana dashboard, alert rules, Jaeger traces, JSON logs with tracebacks |
-| **Web console** | React app to try prompts, watch the guardrails work and read live metrics |
+| **Demo console** | React app at http://localhost:5173: inspect any prompt and see what each guardrail did to it, manage tenants, keys and policies, and try the agent-security checks live |
 
 ## How a request flows
 
@@ -87,51 +89,57 @@ flowchart LR
 6. **Output redaction** masks PII and the system-prompt canary in the answer. Streams are redacted sentence by sentence before they are sent.
 7. Metrics, logs and traces record the app, model, cache result, cost and security decisions.
 
-## Screenshot tour
+## Demo
 
-All screenshots were taken from the running Docker Compose stack.
+**[Watch the captioned demo video](docs/demo/guardrail-proxy-demo.webm)** (3 min 49 s, WebM). It was recorded on the
+full Docker Compose stack with every request going to the real proxy: one real call to Groq, the repeat served
+from cache. The screenshots below are from the same run; all of them are in
+[`docs/demo/screenshots`](docs/demo/screenshots), with notes in [`docs/demo/README.md`](docs/demo/README.md).
 
-### Playground: a request and what the guardrails did
+### Inspect: what each guardrail did to a request
 
-Each answer shows the model used, cache result, latency, tokens, cost, risk score and the PII / injection checks.
+The prompt is shown as a document under inspection. Masked personal data appears as dark redaction bars labelled
+with what was hidden, and the numbered checkpoint trace gives each guardrail's verdict in the order the proxy runs it.
 
-![Playground](docs/screenshots/01-playground.png)
+| Personal data masked, request allowed | Attack blocked (caught phrases struck through) |
+|---|---|
+| ![Personal data masked](docs/demo/screenshots/01-inspect/01-personal-data-masked.png) | ![Instruction override blocked](docs/demo/screenshots/01-inspect/02-instruction-override-blocked.png) |
+| **Injection hidden in a tool result, blocked** | **Zero-width character evasion, blocked** |
+| ![Tool-result injection blocked](docs/demo/screenshots/01-inspect/03-tool-result-injection-blocked.png) | ![Zero-width evasion blocked](docs/demo/screenshots/01-inspect/04-zero-width-evasion-blocked.png) |
+| **Full request: Groq only ever saw the masked prompt** | **Same prompt again: exact cache hit, no model call** |
+| ![Full request to Groq](docs/demo/screenshots/01-inspect/06-full-request-groq.png) | ![Exact cache hit](docs/demo/screenshots/01-inspect/07-exact-cache-hit.png) |
 
-### Security Lab: personal data is masked before it reaches the model
+### Tenants and policies
 
-The original prompt contains an email address, a phone number and an API key. The model receives `[EMAIL]`, `[PHONE]` and `[API_KEY]` instead and still answers the request.
+Each customer gets an organization, projects and keys; a project's policy is versioned. Monitor mode lets a
+would-be-blocked request through and records it; publishing an enforce version blocks it, and every version can be
+rolled back.
 
-![Security Lab showing PII masking](docs/screenshots/02-security-lab-pii-masking.png)
+| Monitor mode: "would block" | Enforce, version history and re-run result |
+|---|---|
+| ![Monitor mode would block](docs/demo/screenshots/02-tenants-policies/02-monitor-mode-would-block.png) | ![Enforce and versions](docs/demo/screenshots/02-tenants-policies/03-enforce-and-versions.png) |
 
-### Attacks are blocked
+### Agent security
 
-Instruction overrides, chat-delimiter injection and system-prompt extraction attempts are stopped with `403` before reaching any model.
+| Tool calls checked against the policy | Session locked after repeated attacks, leaking image removed |
+|---|---|
+| ![Tool-call verdicts](docs/demo/screenshots/03-agent-security/01-tool-calls.png) | ![Session locked](docs/demo/screenshots/03-agent-security/03-session-locked.png) |
 
-![Blocked attack test cases](docs/screenshots/03-attacks-blocked.png)
+### Observability
 
-### Semantic cache: a paraphrase is answered from cache
+| Grafana: traffic, latency, cache, security, cost | Jaeger: one `/generate` request, 14 spans |
+|---|---|
+| ![Grafana dashboard](docs/demo/screenshots/04-observability/01-grafana-overview.png) | ![Jaeger trace](docs/demo/screenshots/04-observability/04-jaeger-trace.png) |
 
-A reworded question is served from ChromaDB in milliseconds at zero model cost; the saved cost is reported.
-
-![Semantic cache hit](docs/screenshots/04-semantic-cache-hit.png)
-
-### Live metrics in the console
-
-![Console metrics](docs/screenshots/05-console-metrics.png)
-
-### Grafana: traffic, latency, cache, security and cost, per app and model
-
-The dashboard (shown at the top of this page) is provisioned automatically. The bottom rows break requests, cost, tokens, blocks and security events down **by application** and **by model**.
-
-### Jaeger: one request traced through the proxy
-
-Security scan, cache lookups, the model call, response redaction and cache writes appear as spans of a single trace.
-
-![Jaeger trace](docs/screenshots/07-jaeger-trace.png)
+The Jaeger trace shows the security scan (97 ms), the Redis and semantic cache lookups, the Groq model call
+(1.75 s), output redaction and the cache writes. Grafana's lower rows break traffic, cost, tokens and blocks down by
+application and by model ([screenshot](docs/demo/screenshots/04-observability/02-grafana-by-app-and-model.png)), and
+Prometheus counts every guardrail decision by action
+([screenshot](docs/demo/screenshots/04-observability/03-prometheus-decisions.png)).
 
 ### API documentation
 
-FastAPI's interactive docs are served at `/docs`.
+FastAPI's interactive docs are served at `/docs` (turned off by default in production).
 
 ![OpenAPI docs](docs/screenshots/08-api-docs.png)
 
@@ -667,7 +675,8 @@ observability/    Prometheus, alert and SLO rules, Grafana provisioning + dashbo
 deploy/helm/      Helm chart for Kubernetes
 migrations/       Alembic schema migrations for the control plane
 docs/             SLA, security, data handling, operations runbook, SOC 2 readiness
-docs/screenshots/ Images used in this README
+docs/demo/        Demo video, GIF preview, screenshots and the end-to-end report
+docs/screenshots/ API docs screenshot
 load_test/        Locust load test, security evaluation, public-dataset benchmark harness
 tests/            Unit, integration and red-team tests
 ```
