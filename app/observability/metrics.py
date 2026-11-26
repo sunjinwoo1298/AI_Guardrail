@@ -218,3 +218,23 @@ def record_unpriced_model(model: str):
 
 def record_usage_source(source: str):
     USAGE_SOURCE_TOTAL.labels(source=source).inc()
+
+
+GUARDRAIL_DECISIONS_TOTAL = Counter(
+    "ai_proxy_guardrail_decisions_total",
+    "Guardrail decisions by action (allow, flag, block, would_block in monitor mode)",
+    ["app", "action", "surface"],
+)
+
+AUDIT_DROPPED_TOTAL = Counter(
+    "ai_proxy_audit_dropped_total",
+    "Audit events dropped because the in-memory audit queue was full",
+)
+
+
+def record_guardrail_decision(action: str, surface: str = "proxy"):
+    GUARDRAIL_DECISIONS_TOTAL.labels(app=app_context.get(), action=action, surface=surface).inc()
+
+
+def record_audit_dropped():
+    AUDIT_DROPPED_TOTAL.inc()

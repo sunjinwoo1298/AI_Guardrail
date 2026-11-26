@@ -35,6 +35,22 @@ _CREDENTIAL_PHRASE = re.compile(
 )
 
 
+def _injection_allow_patterns() -> list:
+    from app.core.config import get_app_policy
+
+    injection = get_app_policy(app_context.get()).get("injection") or {}
+    return list(injection.get("allow_patterns") or [])
+
+
+def _strip_allowed(text: str, patterns: list) -> str:
+    for pattern in patterns:
+        try:
+            text = re.sub(pattern, " ", text, flags=re.IGNORECASE)
+        except re.error:
+            continue  # validated on write; never fail a scan over one pattern
+    return text
+
+
 def _classifier_view(text: str, pii_detections: list) -> str:
     masked = mask_pii(text, pii_detections)
     return re.sub(r"[ \t]{2,}", " ", _CREDENTIAL_PHRASE.sub("", masked))
@@ -82,9 +98,16 @@ def calculate_risk_score(text: str) -> Tuple[float, list, list]:
     span = span_ctx.__enter__() if span_ctx else None
     try:
         pii_detections = detect_pii(text)
-        injection_result = score_prompt_injection(
-            text, classifier_text=_classifier_view(text, pii_detections) if pii_detections else None
-        )
+        # A project's injection.allow_patterns (known false positives) are removed from
+        # what the injection detectors see; PII detection still reads the full text.
+        allow_patterns = _injection_allow_patterns()
+        injection_text = _strip_allowed(text, allow_patterns)
+        classifier_text = None
+        if pii_detections:
+            classifier_text = _strip_allowed(_classifier_view(text, pii_detections), allow_patterns)
+        elif injection_text != text:
+            classifier_text = injection_text
+        injection_result = score_prompt_injection(injection_text, classifier_text=classifier_text)
         injection_detections = injection_result.get("signals", [])
 
         pii_risk = 0.0

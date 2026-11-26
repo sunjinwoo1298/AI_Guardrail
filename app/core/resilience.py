@@ -73,6 +73,9 @@ def is_client_error(exc: BaseException) -> bool:
     """A non-retryable 4xx: the caller's request was wrong (bad schema, bad parameter).
     It must not count against the provider's circuit breaker, or one tenant sending bad
     requests would open the breaker for everyone."""
+    status = getattr(exc, "status_code", None)
+    if exc.__class__.__name__ == "HTTPException" and isinstance(status, int):
+        return 400 <= status < 500  # raised by the proxy itself, e.g. a missing BYOK key
     httpx = _httpx()
     return (
         httpx is not None

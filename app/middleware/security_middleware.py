@@ -9,22 +9,64 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.core.config import ENABLE_PII_MASKING, MAX_CHAT_INPUT_CHARS, MAX_PROMPT_CHARS, get_app_policy
-from app.core.context import app_context
+from app.control import audit
+from app.control.policy import Policy, policy_for
+from app.core.config import (
+    AUDIT_LOG_ALLOWED_REQUESTS,
+    ENABLE_PII_MASKING,
+    MAX_CHAT_INPUT_CHARS,
+    MAX_PROMPT_CHARS,
+    get_app_policy,
+)
+from app.core.context import app_context, tenant_context
 from app.core.logger import logger
 from app.core.request_id import generate_request_id
 from app.observability.tracing import trace
 from app.observability.metrics import (
+    record_guardrail_decision,
     record_security_block,
     record_security_event,
     record_security_risk,
 )
 from app.security.prompt_guard import detect_prompt_injection
 from app.security.risk_engine import calculate_risk_score, should_block_prompt
-from app.security.sanitizer import sanitize_text
+from app.security.decision import Decision, decide, deny_hits, masks_pii
+from app.security.sanitizer import canonical_type, sanitize_text
 
 
-def sanitize_messages(messages: list, detections_by_segment: Optional[dict] = None) -> list:
+def _block_metric_reason(decision: Decision, injection_detections: list) -> str:
+    first = decision.reasons[0] if decision.reasons else "risk_score"
+    if first.startswith("pii:"):
+        return "pii"
+    if first.startswith("deny:"):
+        return "deny_rule"
+    return "prompt_injection" if injection_detections else first
+
+
+def _audit_decision(request, decision: Decision, risk_score: float, pii_detections: list, policy: Policy) -> None:
+    """Blocks, flags and monitor-mode would-blocks are always audited; allowed requests
+    only with AUDIT_LOG_ALLOWED_REQUESTS. Entity types and detector names only, no text."""
+    if decision.action == "allow" and not AUDIT_LOG_ALLOWED_REQUESTS:
+        return
+    audit.record(
+        f"request.{decision.action}",
+        action=decision.action,
+        reasons=decision.all_reasons(),
+        risk_score=risk_score,
+        details={
+            "path": request.url.path,
+            "policy_mode": policy.mode,
+            "pii_types": sorted({canonical_type(d.get("type", "")) for d in pii_detections if isinstance(d, dict)}),
+        },
+        tenant=tenant_context.get(),
+        app=app_context.get(),
+        request_id=getattr(request.state, "request_id", None),
+        monitor=decision.action == "would_block",
+    )
+
+
+def sanitize_messages(messages: list, detections_by_segment: Optional[dict] = None,
+                      skip_types: Optional[frozenset] = None, mask: bool = True) -> list:
     """Mask PII in every message.
 
     Untrusted segments (user / tool text) are masked with the detections the scan
@@ -34,9 +76,14 @@ def sanitize_messages(messages: list, detections_by_segment: Optional[dict] = No
     licence, ...) were scored but sent to the provider unmasked. Other roles get the
     regex pass, as before.
     """
-    if not ENABLE_PII_MASKING:
+    if not ENABLE_PII_MASKING or not mask:
         return messages
     detections_by_segment = detections_by_segment or {}
+
+    def _mask(text, detections):
+        # Only pass skip_types when set, so simple sanitize_text replacements still work.
+        return sanitize_text(text, detections, skip_types) if skip_types else sanitize_text(text, detections)
+
     sanitized = []
     for i, msg in enumerate(messages):
         if not isinstance(msg, dict):
@@ -45,13 +92,13 @@ def sanitize_messages(messages: list, detections_by_segment: Optional[dict] = No
         new_msg = dict(msg)
         content = msg.get("content")
         if isinstance(content, str):
-            new_msg["content"] = sanitize_text(content, detections_by_segment.get((i, None)))
+            new_msg["content"] = _mask(content, detections_by_segment.get((i, None)))
         elif isinstance(content, list):
             new_content = []
             for j, part in enumerate(content):
                 if isinstance(part, dict) and part.get("type") == "text":
                     new_part = dict(part)
-                    new_part["text"] = sanitize_text(part.get("text", ""), detections_by_segment.get((i, j)))
+                    new_part["text"] = _mask(part.get("text", ""), detections_by_segment.get((i, j)))
                     new_content.append(new_part)
                 else:
                     new_content.append(part)
@@ -142,6 +189,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         if not request.url.path.startswith(("/generate", "/stream", "/v1/chat/completions")):
             return await call_next(request)
 
+        final_decision: Optional[Decision] = None
         try:
             payload = getattr(request.state, "raw_payload", None)
             if payload is None:
@@ -157,6 +205,10 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             if not isinstance(payload, dict):
                 return await call_next(request)  # the route's schema validation rejects it (422)
 
+            policy = policy_for(app_context.get())
+            mask_prompt = ENABLE_PII_MASKING and masks_pii(policy)
+            skip_types = frozenset(policy.pii.allow_entities)
+
             # Extract prompt from messages array or prompt field
             if "messages" in payload:
                 segments = _untrusted_segments(payload.get("messages"))
@@ -166,12 +218,13 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 # results) were unbounded and every character goes through Presidio and
                 # the classifier.
                 total_chars = sum(len(t) for t in untrusted_texts)
-                if total_chars > MAX_CHAT_INPUT_CHARS:
+                input_limit = policy.max_input_chars or MAX_CHAT_INPUT_CHARS
+                if total_chars > input_limit:
                     return JSONResponse(
                         status_code=413,
                         content={"error": {
                             "message": f"Untrusted input too long: {total_chars} characters "
-                                       f"(limit {MAX_CHAT_INPUT_CHARS})",
+                                       f"(limit {input_limit})",
                             "type": "invalid_request_error",
                             "code": "input_too_long",
                         }},
@@ -207,20 +260,26 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             else:
                 risk_score, pii_detections, injection_detections = await loop.run_in_executor(
                     _SCAN_EXECUTOR, ctx.run, calculate_risk_score, prompt)
-            if not ENABLE_PII_MASKING:
+            def _mask(text, detections):
+                return sanitize_text(text, detections, skip_types) if skip_types else sanitize_text(text, detections=detections)
+
+            if not mask_prompt:
                 sanitized_prompt = prompt
             elif "messages" in payload:
                 # Detection offsets are per segment, so mask each segment with its own.
                 sanitized_prompt = "\n".join(
-                    sanitize_text(text, detections_by_segment.get((i, j))) for i, j, text in segments
+                    _mask(text, detections_by_segment.get((i, j))) for i, j, text in segments
                 )
             else:
-                sanitized_prompt = sanitize_text(prompt, detections=pii_detections)
+                sanitized_prompt = _mask(prompt, pii_detections)
             app_threshold = get_app_policy(app_context.get()).get("max_risk_score")
             if app_threshold is None:
-                blocked = should_block_prompt(risk_score, injection_detections)
+                injection_blocked = should_block_prompt(risk_score, injection_detections)
             else:
-                blocked = should_block_prompt(risk_score, injection_detections, max_risk_score=float(app_threshold))
+                injection_blocked = should_block_prompt(risk_score, injection_detections, max_risk_score=float(app_threshold))
+            decision = decide(policy, injection_blocked=injection_blocked, injection_signals=injection_detections,
+                              pii_detections=pii_detections, deny=deny_hits(policy, untrusted_texts))
+            blocked = decision.blocked
 
             tracer = trace.get_tracer("ai_guardrail_proxy") if trace else None
             if tracer:
@@ -244,12 +303,16 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 "prompt_injection_matches": injection_detections,
                 "sanitized": sanitized_prompt != prompt,
                 "blocked": blocked,
+                "guardrail_action": decision.action,
+                "guardrail_reasons": decision.all_reasons(),
+                "policy_mode": policy.mode,
             }
             request.state.security_context = security_context
             
             # Save sanitized messages if messages exists
             if "messages" in payload:
-                request.state.sanitized_messages = sanitize_messages(payload.get("messages", []), detections_by_segment)
+                request.state.sanitized_messages = sanitize_messages(
+                    payload.get("messages", []), detections_by_segment, skip_types=skip_types or None, mask=mask_prompt)
             else:
                 request.state.sanitized_messages = None
 
@@ -274,8 +337,11 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 security_context["prompt_injection_detected"],
             )
 
+            record_guardrail_decision(decision.action)
+            _audit_decision(request, decision, risk_score, pii_detections, policy)
+
             if blocked:
-                record_security_block("prompt_injection" if injection_detections else "risk_score")
+                record_security_block(_block_metric_reason(decision, injection_detections))
                 logger.warning(
                     "Prompt blocked by security policy: risk_score=%s path=%s",
                     security_context["risk_score"],
@@ -283,14 +349,19 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 )
                 return JSONResponse(
                     status_code=403,
+                    headers={"x-guardrail-action": "block"},
                     content={
                         "error": "Prompt blocked due to security policy",
+                        "code": "blocked_by_policy",
+                        "reasons": decision.reasons,
+                        "request_id": getattr(request.state, "request_id", None),
                         "risk_score": security_context["risk_score"],
                         "pii_detected": security_context["pii_detected"],
                         "prompt_injection_detected": security_context["prompt_injection_detected"],
                         "sanitized": security_context["sanitized"],
                     },
                 )
+            final_decision = decision
 
         except json.JSONDecodeError:
             logger.warning("Invalid JSON payload received by security middleware")
@@ -302,4 +373,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 content={"error": "Security screening unavailable, request rejected"},
             )
 
-        return await call_next(request)
+        response = await call_next(request)
+        if final_decision is not None:
+            response.headers["x-guardrail-action"] = final_decision.action
+            if final_decision.action != "allow":
+                response.headers["x-guardrail-reasons"] = ",".join(final_decision.all_reasons())[:500]
+        return response

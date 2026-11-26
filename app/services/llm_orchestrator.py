@@ -194,6 +194,16 @@ def clean_params(params: Optional[dict]) -> dict:
     return {k: v for k, v in (params or {}).items() if k not in _PROXY_OWNED_PARAMS and v is not None}
 
 
+def _cache_policy() -> tuple:
+    """(exact, semantic) caching switches from the current app's policy. A project
+    handling per-user data can turn sharing of answers between its users off."""
+    from app.core.config import get_app_policy
+    from app.core.context import app_context
+
+    cache = get_app_policy(app_context.get()).get("cache") or {}
+    return bool(cache.get("exact", True)), bool(cache.get("semantic", True))
+
+
 def _app_fingerprint(security_metadata: Optional[dict]) -> str:
     api_key = _api_key_from_context(security_metadata)
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16] if api_key else "anonymous"
@@ -226,6 +236,8 @@ def _upstream_client_error(exc: BaseException) -> Optional[HTTPException]:
     """A 4xx from the provider (bad tool schema, unsupported parameter, ...) is the
     caller's error: return it to them instead of trying the fallback model and
     reporting a misleading 503."""
+    if isinstance(exc, HTTPException) and 400 <= exc.status_code < 500:
+        return exc  # the proxy's own refusal (e.g. provider_key_missing): no fallback
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         if 400 <= status < 500 and status not in (408, 429):
@@ -411,6 +423,10 @@ async def generate_response(
     cache_ns = _cache_namespace(active_model, messages, params, security_metadata)
     # A paraphrase must not stand in for a tool-calling turn.
     allow_semantic = "tools" not in params and "functions" not in params
+    exact_on, semantic_on = _cache_policy()
+    if not exact_on:
+        query = ""  # no lookups and no writes for this project
+    allow_semantic = allow_semantic and semantic_on
     model_context.set(active_model)
 
     try:
@@ -735,6 +751,10 @@ async def stream_response(
     cache_ns = _cache_namespace(active_model, messages, params, security_metadata)
     # A paraphrase must not stand in for a tool-calling turn.
     allow_semantic = "tools" not in params and "functions" not in params
+    exact_on, semantic_on = _cache_policy()
+    if not exact_on:
+        query = ""  # no lookups and no writes for this project
+    allow_semantic = allow_semantic and semantic_on
     model_context.set(active_model)
 
     try:

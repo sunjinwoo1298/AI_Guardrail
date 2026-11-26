@@ -7,6 +7,8 @@ from app.providers.http import PROVIDER_TIMEOUT, provider_client
 from app.core.config import GROQ_API_KEY
 
 class GroqAdapter(BaseLLMAdapter):
+    provider_name = "groq"
+
     def __init__(self):
         self.api_key = GROQ_API_KEY
 

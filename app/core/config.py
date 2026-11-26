@@ -72,6 +72,16 @@ APP_POLICIES = _parse_app_policies(os.getenv("APP_POLICIES", ""))
 
 
 def get_app_policy(app_name: str) -> dict:
+    """Policy fields for ``app_name`` as a plain dict.
+
+    For a control-plane tenant (resolved by the auth middleware for this request) this is
+    its active, validated policy document; otherwise the env APP_POLICIES entry.
+    """
+    from app.core.context import tenant_context
+
+    tenant = tenant_context.get()
+    if tenant is not None and getattr(tenant, "app_name", None) == app_name:
+        return tenant.policy_dict
     return APP_POLICIES.get(app_name, {})
 
 
@@ -190,6 +200,37 @@ REDACT_TOOL_CALL_ARGUMENTS = os.getenv("REDACT_TOOL_CALL_ARGUMENTS", "true").low
 # unlimited, "closed" rejects with 503. Production defaults to closed.
 RATE_LIMIT_FAIL_MODE = os.getenv("RATE_LIMIT_FAIL_MODE", "closed" if IS_PRODUCTION else "open").strip().lower()
 
+# ---------------------------------------------------------------------------
+# Control plane (Phase 1): tenants, hashed keys, policies, BYOK, audit
+# ---------------------------------------------------------------------------
+# SQLAlchemy URL, e.g. postgresql+psycopg2://user:pass@db:5432/guardrail. Empty disables
+# the control plane: only the env API_KEYS / APP_POLICIES tenants exist.
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+# Create missing tables at startup (development convenience). In production run
+# `alembic upgrade head` instead.
+DB_AUTO_CREATE = os.getenv("DB_AUTO_CREATE", "false" if IS_PRODUCTION else "true").lower() == "true"
+DEV_KEY_HASH_SECRET = "dev-only-key-hash-secret-change-me"
+# Server-side secret for HMAC-hashing API keys. Only hashes are stored, so a database leak
+# does not expose usable keys; rotating this secret invalidates every issued key.
+KEY_HASH_SECRET = os.getenv("KEY_HASH_SECRET", DEV_KEY_HASH_SECRET)
+# Fernet keys (comma-separated, newest first) encrypting tenants' provider keys (BYOK).
+# Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+PROVIDER_KEY_ENCRYPTION_KEYS = [k.strip() for k in os.getenv("PROVIDER_KEY_ENCRYPTION_KEYS", "").split(",") if k.strip()]
+# Bearer token for the /admin/v1 API. Empty disables the admin API.
+ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "").strip()
+# Prefix of issued keys: "<prefix>_<random>", e.g. gpk_9fQ...; recognisable in logs and by
+# secret scanners.
+API_KEY_PREFIX = os.getenv("API_KEY_PREFIX", "gpk")
+# How long a resolved key / policy may be served from memory. Admin changes also bump a
+# version in Redis, which every replica checks every CONTROL_VERSION_CHECK_SECONDS.
+CONTROL_CACHE_TTL_SECONDS = float(os.getenv("CONTROL_CACHE_TTL_SECONDS", "30"))
+CONTROL_VERSION_CHECK_SECONDS = float(os.getenv("CONTROL_VERSION_CHECK_SECONDS", "2"))
+# Audit log of security decisions and admin actions (never prompt contents).
+AUDIT_ENABLED = os.getenv("AUDIT_ENABLED", "true").lower() == "true"
+# Also record allowed requests (blocked, flagged and monitor-mode events are always kept).
+AUDIT_LOG_ALLOWED_REQUESTS = os.getenv("AUDIT_LOG_ALLOWED_REQUESTS", "false").lower() == "true"
+AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "90"))
+
 
 def validate_settings():
     errors = []
@@ -272,6 +313,29 @@ def validate_settings():
         canary = policy.get("canary")
         if canary is not None and (not isinstance(canary, str) or len(canary) < 12):
             errors.append(f"APP_POLICIES[{app_name}].canary must be a string of at least 12 characters")
+
+    # Env policies use the same schema as control-plane policies.
+    from app.control.policy import PolicyError, parse_policy
+
+    for app_name, policy in APP_POLICIES.items():
+        try:
+            parse_policy(policy)
+        except PolicyError as exc:
+            errors.append(f"APP_POLICIES[{app_name}]: {exc}")
+    if ADMIN_API_TOKEN and len(ADMIN_API_TOKEN) < 32:
+        errors.append("ADMIN_API_TOKEN must be at least 32 characters")
+    if PROVIDER_KEY_ENCRYPTION_KEYS:
+        from app.control.crypto import validate_keys
+
+        problem = validate_keys(PROVIDER_KEY_ENCRYPTION_KEYS)
+        if problem:
+            errors.append(problem)
+
+    if IS_PRODUCTION and DATABASE_URL:
+        if KEY_HASH_SECRET == DEV_KEY_HASH_SECRET or len(KEY_HASH_SECRET) < 32:
+            errors.append("KEY_HASH_SECRET must be a private value of at least 32 characters in production")
+        if not PROVIDER_KEY_ENCRYPTION_KEYS:
+            errors.append("PROVIDER_KEY_ENCRYPTION_KEYS is required in production when DATABASE_URL is set")
 
     if IS_PRODUCTION:
         # The default canary is published in this repository, so it protects nothing.

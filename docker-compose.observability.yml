@@ -10,6 +10,9 @@ services:
     environment:
       # Persist the ChromaDB semantic cache across restarts.
       - CHROMA_PERSIST_DIR=/home/app/data/chroma
+      # Control plane (tenants, keys, policies, audit). Override in .env to disable or
+      # point at a managed Postgres.
+      - DATABASE_URL=${DATABASE_URL:-postgresql+psycopg2://guardrail:${POSTGRES_PASSWORD:-guardrail-dev}@postgres:5432/guardrail}
     ports:
       - "8000:8000"
     volumes:
@@ -18,7 +21,27 @@ services:
       - chroma_data:/home/app/data
     depends_on:
       - redis
+      - postgres
       - otel-collector
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-guardrail-postgres
+    environment:
+      - POSTGRES_USER=guardrail
+      # Set POSTGRES_PASSWORD in .env; the fallback is for local development only.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-guardrail-dev}
+      - POSTGRES_DB=guardrail
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardrail -d guardrail"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
   redis:
@@ -96,6 +119,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  postgres_data:
   prometheus_data:
   grafana_data:
   redis_data:

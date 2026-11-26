@@ -68,6 +68,8 @@ def translate_anthropic_response_to_openai(anth_resp: dict, model: str) -> dict:
 
 
 class AnthropicAdapter(BaseLLMAdapter):
+    provider_name = "anthropic"
+
     def __init__(self):
         self.api_key = ANTHROPIC_API_KEY
 

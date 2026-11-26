@@ -9,6 +9,8 @@ from app.core.config import OPENAI_API_KEY
 class OpenAIAdapter(BaseLLMAdapter):
     """Any OpenAI-compatible chat-completions API (OpenAI itself, OpenRouter, ...)."""
 
+    provider_name = "openai"
+
     chat_url = "https://api.openai.com/v1/chat/completions"
     key_name = "OPENAI_API_KEY"
 

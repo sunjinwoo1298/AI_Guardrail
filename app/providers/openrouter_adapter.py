@@ -16,6 +16,8 @@ class OpenRouterAdapter(OpenAIAdapter):
     through the proxy can never spend credits on the account.
     """
 
+    provider_name = "openrouter"
+
     chat_url = "https://openrouter.ai/api/v1/chat/completions"
     key_name = "OPEN_ROUTER_API_KEY"
 

@@ -40,6 +40,9 @@ COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
 COPY --chown=app:app app ./app
+# Control-plane schema migrations: docker compose exec app alembic upgrade head
+COPY --chown=app:app alembic.ini ./
+COPY --chown=app:app migrations ./migrations
 
 USER app
 EXPOSE 8000

@@ -123,6 +123,8 @@ def translate_gemini_chunk_to_openai(gemini_chunk: dict, model: str, chunk_id: s
 
 
 class GeminiAdapter(BaseLLMAdapter):
+    provider_name = "gemini"
+
     def __init__(self):
         self.api_key = GEMINI_API_KEY
 

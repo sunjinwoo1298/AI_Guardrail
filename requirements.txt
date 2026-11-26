@@ -25,3 +25,8 @@ opentelemetry-instrumentation-asgi>=0.51b0,<1.0
 opentelemetry-exporter-otlp-proto-http>=1.30,<2.0
 presidio-analyzer>=2.2.355,<3.0
 httpx>=0.27,<1.0
+# Control plane: tenants, keys, policies, audit (Postgres in production, SQLite locally)
+sqlalchemy>=2.0.30,<3.0
+alembic>=1.13,<2.0
+psycopg2-binary>=2.9.9,<3.0
+cryptography>=42.0,<47.0

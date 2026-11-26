@@ -78,10 +78,27 @@ def _merge_overlapping(detections: List[dict], text_length: int) -> List[dict]:
     return merged
 
 
-def mask_pii(text: str, detections: Optional[List[dict]] = None) -> str:
-    """Replace detected PII with labels such as [EMAIL]. No HTML escaping."""
+# Presidio and the regex patterns name some entities differently.
+_CANONICAL = {"EMAIL_ADDRESS": "EMAIL", "PHONE_NUMBER": "PHONE", "US_SSN": "SSN",
+              "IN_AADHAAR": "AADHAAR", "IN_PAN": "PAN"}
+
+
+def canonical_type(pii_type: str) -> str:
+    pii_type = (pii_type or "").upper()
+    return _CANONICAL.get(pii_type, pii_type)
+
+
+def mask_pii(text: str, detections: Optional[List[dict]] = None, skip_types: Optional[frozenset] = None) -> str:
+    """Replace detected PII with labels such as [EMAIL]. No HTML escaping.
+
+    ``skip_types`` (canonical names, see canonical_type) are left as they are: a policy's
+    ``pii.allow_entities``.
+    """
     if not text:
         return text
+    skip = frozenset(canonical_type(t) for t in (skip_types or ()))
+    if skip and detections:
+        detections = [d for d in detections if canonical_type(d.get("type", "")) not in skip]
 
     masked = text
     # 1. Replace detected spans right-to-left so earlier offsets stay valid.
@@ -98,18 +115,28 @@ def mask_pii(text: str, detections: Optional[List[dict]] = None) -> str:
 
     # 2. Regex pass for anything the detectors missed.
     for pii_type, pattern in PII_PATTERNS.items():
+        if canonical_type(pii_type) in skip:
+            continue
         replacement = LABEL_MAP.get(pii_type, f"[{pii_type}]")
         masked = re.sub(pattern, replacement, masked, flags=re.IGNORECASE)
     return masked
 
 
-def sanitize_text(text: str, detections: Optional[List[dict]] = None) -> str:
+def sanitize_text(text: str, detections: Optional[List[dict]] = None, skip_types: Optional[frozenset] = None) -> str:
     """Mask PII in a prompt. No HTML escaping: the model must see code such as
     ``a < b`` as written, and escaping here was the first of several layers that
     produced output like ``&amp;lt;br&amp;gt;``."""
     if not text:
         return text
-    return mask_pii(text, detections)
+    return mask_pii(text, detections, skip_types)
+
+
+def _output_pii_settings() -> tuple:
+    """(mask output PII?, entity types to leave alone) from the current app's policy."""
+    from app.core.config import get_app_policy
+
+    pii = get_app_policy(app_context.get()).get("pii") or {}
+    return pii.get("action", "mask") != "off", frozenset(pii.get("allow_entities") or ())
 
 
 def sanitize_response(text: str) -> str:
@@ -147,7 +174,8 @@ def _redact_plain(text: str) -> str:
     """PII/secret masking plus redaction of the global and the current app's canary."""
     if not text:
         return text
-    redacted = mask_pii(text)
+    mask_output, allowed = _output_pii_settings()
+    redacted = mask_pii(text, skip_types=allowed) if mask_output else text
     canaries = get_canaries(app_context.get())
     global_canary = get_system_prompt_canary() or SYSTEM_PROMPT_CANARY
     if global_canary and global_canary not in canaries:

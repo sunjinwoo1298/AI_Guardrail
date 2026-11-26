@@ -15,6 +15,7 @@
 - [Quick start](#quick-start)
 - [Connect your application](#connect-your-application)
 - [Per-app keys and policies](#per-app-keys-and-policies)
+- [Multi-tenant control plane](#multi-tenant-control-plane)
 - [Providers and models](#providers-and-models)
 - [Security model](#security-model)
 - [Observability](#observability)
@@ -238,6 +239,72 @@ APP_POLICIES={"support-bot": {"rpm": 30, "tpm": 4000, "allowed_models": ["groq/*
 | `max_risk_score` | This app's block threshold (global default `MAX_RISK_SCORE=0.8`) |
 | `injection_verifier` | `true` to let Llama Prompt Guard 2 overrule local injection verdicts for this app (fewer false blocks, weaker detection) |
 
+`APP_POLICIES` entries use the same policy schema as the control plane below, so every field in the next section works here too.
+
+## Multi-tenant control plane
+
+To serve several customers, set `DATABASE_URL` (Postgres; Docker Compose starts one). Customers then get **organizations → projects → API keys**, each project has a **versioned policy**, and everything is managed through the admin API. Keys in `API_KEYS` keep working alongside.
+
+**Set up**
+
+```env
+DATABASE_URL=postgresql+psycopg2://guardrail:<password>@postgres:5432/guardrail
+ADMIN_API_TOKEN=<at least 32 random characters>
+KEY_HASH_SECRET=<at least 32 random characters>
+PROVIDER_KEY_ENCRYPTION_KEYS=<Fernet key>   # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+```bash
+alembic upgrade head                                            # create / migrate the schema
+python -m app.control.cli bootstrap --org acme --project support-bot   # prints the first API key once
+```
+
+**API keys.** Keys look like `gpk_…`. Only an HMAC of each key is stored, and the plaintext is shown once. Keys have scopes (`chat`, `guard`, `models`), optional expiry, revocation, and rotation with a grace period. Rate limits and the cache belong to the project, so rotating a key keeps both. Suspending an organization disables all of its keys at once. Changes reach every replica within about two seconds (a version counter in Redis).
+
+**Policies.** Every publish creates a new version, and a rollback re-publishes an old one, so the history of what was enforced is never rewritten:
+
+```json
+{
+  "mode": "monitor",
+  "rpm": 60, "tpm": 20000,
+  "allowed_models": ["groq/*"],
+  "injection": {"action": "block", "allow_patterns": ["^reply with exactly"]},
+  "pii": {"action": "mask", "allow_entities": ["EMAIL_ADDRESS"]},
+  "deny": [{"name": "competitors", "keywords": ["globex"], "action": "flag"}],
+  "cache": {"exact": true, "semantic": false},
+  "max_input_chars": 16000,
+  "canary": "<private token placed in this project's system prompt>",
+  "allow_platform_provider_keys": false
+}
+```
+
+| Field | Effect |
+|---|---|
+| `mode` | `enforce` (default) or `monitor`. In monitor mode requests the policy would block are forwarded and recorded as `would_block`, so a customer can roll out safely and tune first |
+| `injection.action` | `block`, `flag` (forward and record) or `off` |
+| `injection.allow_patterns` | Regexes removed before injection scanning, to fix known false positives without turning detection off |
+| `pii.action` | `mask` (default), `block`, `flag` or `off`; `allow_entities` lists types this project may send unmasked |
+| `deny` | Keyword or regex rules, each `block` or `flag`. Regexes with nested quantifiers are refused (ReDoS) |
+| `cache` | Turn exact or semantic answer sharing off for projects with per-user data |
+| `allow_platform_provider_keys` | `false` requires the project to bring its own provider keys |
+
+Every response carries `x-guardrail-action` (`allow`, `flag`, `would_block`), plus `x-guardrail-reasons` when it is not `allow`. Blocked requests return `403` with `reasons`.
+
+**Bring your own provider key.** `PUT /admin/v1/orgs/{org}/provider-keys/{provider}` stores an organization's own Groq, OpenAI, Anthropic, Gemini or OpenRouter key, or a project's key if you pass `project_id`. Keys are encrypted with Fernet (MultiFernet, so the encryption keys can be rotated), are never returned, and are used for that tenant's requests in place of the platform key.
+
+**Audit log.** Blocks, flags, monitor-mode would-blocks and every admin action are recorded with tenant, key prefix, request ID, reasons, entity types and risk score. Prompt and response text are never stored. Rows are hash-chained: `GET /admin/v1/audit/verify` detects edited or deleted rows, and `POST /admin/v1/audit/purge` applies `AUDIT_RETENTION_DAYS` (default 90). Set `AUDIT_LOG_ALLOWED_REQUESTS=true` to record allowed requests too.
+
+| Admin endpoint | Purpose |
+|---|---|
+| `POST/GET /admin/v1/orgs`, `GET/PATCH /admin/v1/orgs/{org}` | Create, list, suspend or reactivate organizations |
+| `POST/GET /admin/v1/orgs/{org}/projects` | Projects (optionally created with an initial policy) |
+| `POST/GET /admin/v1/projects/{id}/keys`, `…/keys/{key}/revoke`, `…/keys/{key}/rotate` | API keys |
+| `GET/PUT /admin/v1/projects/{id}/policy`, `…/policy/versions`, `…/policy/rollback/{v}`, `POST /admin/v1/policy/validate` | Policies |
+| `PUT/GET/DELETE /admin/v1/orgs/{org}/provider-keys…` | Bring-your-own provider keys |
+| `GET /admin/v1/audit`, `GET /admin/v1/audit/verify`, `POST /admin/v1/audit/purge` | Audit log |
+
+The admin API is authenticated with the single `ADMIN_API_TOKEN` and meant for the operator's own tooling. Per-user admin accounts with SSO and roles come later.
+
 ## Providers and models
 
 Model names are `<provider>/<model>`:
@@ -293,6 +360,8 @@ Model names are `<provider>/<model>`:
 | `GET` | `/v1/models` | Configured models in OpenAI list format |
 | `POST` | `/generate` | `{"prompt": "..."}`; returns the answer plus guardrail metadata (risk score, PII, cache, cost, tokens) |
 | `POST` | `/stream` | Same as `/generate`, as server-sent events; the last event is `{"__meta": {...}}` |
+| `POST` | `/v1/guard/scan` | Standalone scan, no model call: `{"input": "..."}` or `{"messages": [...]}`, optional `"direction": "output"`; returns `action`, `reasons`, detections and a sanitized copy |
+| `*` | `/admin/v1/...` | Control-plane admin API (see [Multi-tenant control plane](#multi-tenant-control-plane)) |
 | `GET` | `/health`, `/ready` | Liveness and readiness |
 | `GET` | `/metrics` | Prometheus metrics |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
@@ -370,7 +439,7 @@ Run the console against it:
 cd frontend && npm install && npm run dev
 ```
 
-Run the test suite (150 tests; no network access needed):
+Run the test suite (193 tests; no network access needed):
 
 ```bash
 python -m pytest -q

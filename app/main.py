@@ -7,9 +7,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
 
+from app.api.admin import router as admin_router
+from app.api.guard import router as guard_router
 from app.api.routes import router
 from app.core.config import (
+    ADMIN_API_TOKEN,
+    DATABASE_URL,
     DEFAULT_SYSTEM_PROMPT_CANARY,
+    DEV_KEY_HASH_SECRET,
+    KEY_HASH_SECRET,
     ENABLE_DOCS,
     ENVIRONMENT,
     IS_PRODUCTION,
@@ -56,18 +62,30 @@ def _startup_warnings():
             logger.warning("/metrics is unauthenticated; set METRICS_AUTH_TOKEN before going live")
         if RATE_LIMIT_FAIL_MODE == "open":
             logger.warning("RATE_LIMIT_FAIL_MODE=open: a Redis outage disables all rate limits")
+        if DATABASE_URL and KEY_HASH_SECRET == DEV_KEY_HASH_SECRET:
+            logger.warning("KEY_HASH_SECRET is the development default; issued keys are not safe to use in production")
+    if not DATABASE_URL:
+        logger.info("Control plane disabled (no DATABASE_URL): only API_KEYS / APP_POLICIES tenants exist")
+    elif not ADMIN_API_TOKEN:
+        logger.info("Admin API disabled (no ADMIN_API_TOKEN)")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_settings()
     _startup_warnings()
+    if DATABASE_URL:
+        from app.control.db import init_engine
+
+        init_engine()
     logger.info(f"Starting AI Guardrail Proxy (environment={ENVIRONMENT})")
     threading.Thread(target=_warm_models, name="model-warmup", daemon=True).start()
     yield
+    from app.control import audit
     from app.providers.http import close_http_clients
 
     await close_http_clients()
+    await asyncio.to_thread(audit.shutdown)  # write queued audit events before exit
 
 
 app = FastAPI(
@@ -89,6 +107,8 @@ app.add_middleware(SecurityMiddleware)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.include_router(router)
+app.include_router(guard_router)
+app.include_router(admin_router)
 
 
 def _protected_metrics_app(metrics_app, token: str):
@@ -144,6 +164,7 @@ async def ready():
     Redis was down (no rate limits). In production those make the replica not ready
     (503); in development the same report is returned with 200.
     """
+    from app.control import db as control_db
     from app.core.redis_client import ping
     from app.security import prompt_guard
 
@@ -154,6 +175,9 @@ async def ready():
         "redis": redis_ok,
     }
     required = ["warmup_complete", "injection_classifier"]
+    if control_db.enabled():
+        checks["database"] = await asyncio.to_thread(control_db.ping)
+        required.append("database")
     if RATE_LIMIT_FAIL_MODE == "closed":
         required.append("redis")
     is_ready = all(checks[name] for name in required)
